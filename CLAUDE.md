@@ -68,9 +68,10 @@ auto-research test        # run smoke tests
 ## Strategy Interface
 
 ```python
-def strategy(open, high, low, close, volume):
-    # Returns: positions array (float, -1.0 to 1.0)
-    # -1.0 = full short, 0.0 = flat, 1.0 = full long
+def strategy(bars):
+    # bars: dict of numpy arrays (keys depend on data source / skill)
+    # Each array is 1D (single symbol) or 2D (n_bars x n_symbols)
+    # Returns: 1D positions array, -1.0 = full short, 0.0 = flat, 1.0 = full long
     return positions
 ```
 

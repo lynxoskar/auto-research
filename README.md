@@ -112,28 +112,26 @@ Raw parquet does not.
 
 ## Strategy format
 
-The LLM writes a Python function that returns **position weights** — not boolean
-entry/exit signals. This gives full expressiveness: long, short, partial, or flat.
+The LLM writes a Python function that receives a `bars` dict and returns position
+weights. The data source decides what's in `bars` — single series or multiple.
 
 ```python
-def strategy(open, high, low, close, volume):
+def strategy(bars):
     """
-    Args: numpy arrays (schema depends on the data source skill).
-    Returns: positions array (same length as inputs).
+    Args: bars dict of numpy arrays (schema described by data source skill).
+          Each array is 1D (single symbol) or 2D (n_bars x n_symbols).
+    Returns: 1D positions array (length = number of bars).
              -1.0 = full short, 0.0 = flat, 1.0 = full long.
-             Fractional values allowed (0.5 = half position).
     """
+    close = bars["close"]
     prices = np.cumprod(1 + close)
-    sma_fast = pd.Series(prices).rolling(20).mean().values
-    sma_slow = pd.Series(prices).rolling(50).mean().values
-
-    # Continuous positioning: full long when trending, flat otherwise
-    positions = np.where(sma_fast > sma_slow, 1.0, 0.0)
-    return positions
+    fast = pd.Series(prices).rolling(20).mean().values
+    slow = pd.Series(prices).rolling(50).mean().values
+    return np.where(fast > slow, 1.0, 0.0)
 ```
 
-Allowed imports: `numpy`, `pandas`, `math`, `statistics`, `functools`, `itertools`.
-Everything else is blocked at both static analysis and runtime.
+The strategy can use any installed Python package. The subprocess provides
+timeout and crash isolation.
 
 ## Torture tests
 

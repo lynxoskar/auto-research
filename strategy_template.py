@@ -7,17 +7,20 @@ import numpy as np
 import pandas as pd
 
 
-def strategy(open, high, low, close, volume):
-    """Generate position weights from anonymized OHLCV returns.
+def strategy(bars):
+    """Generate position weights from market data.
 
     Args:
-        open, high, low, close: numpy arrays of percentage returns.
-        volume: numpy array of z-score normalized volume.
+        bars: dict of numpy arrays. Keys depend on the data source.
+              Typical keys: open, high, low, close, volume.
+              Each array is 1D (single symbol) or 2D (n_bars x n_symbols).
+              The skill file describes the exact schema.
 
     Returns:
-        positions: numpy array of floats, same length as inputs.
+        positions: 1D numpy array of floats, length = number of bars.
                    -1.0 = full short, 0.0 = flat, 1.0 = full long.
     """
+    close = bars["close"]
     n = len(close)
     positions = np.zeros(n)
 

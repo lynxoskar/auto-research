@@ -53,7 +53,7 @@ Table: `lake.main.lynx_minutebars` — ~14,000 anonymized symbols, 20+ years, ~1
 ## What You Can Do
 
 1. **Explore the data** — look at return distributions, autocorrelation, volume patterns
-2. **Write strategy functions** — `def strategy(open, high, low, close, volume) -> positions`
+2. **Write strategy functions** — `def strategy(bars) -> positions` where bars is a dict
 3. **Use standard indicators** — SMA, EMA, RSI, Bollinger, MACD, ATR on reconstructed prices
 4. **Use numpy and pandas** — no other libraries allowed in strategy code
 

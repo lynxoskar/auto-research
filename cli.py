@@ -312,14 +312,9 @@ from strategy import strategy
 
 def main():
     """Load data from stdin (JSON) and output positions."""
-    data = json.loads(sys.stdin.read())
-    positions = strategy(
-        np.array(data["open"]),
-        np.array(data["high"]),
-        np.array(data["low"]),
-        np.array(data["close"]),
-        np.array(data["volume"]),
-    )
+    raw = json.loads(sys.stdin.read())
+    bars = {k: np.array(v) for k, v in raw.items()}
+    positions = strategy(bars)
     print(json.dumps({"positions": [float(p) for p in positions]}))
 
 

@@ -235,7 +235,7 @@ class TestSandbox:
 
     def test_timeout_on_infinite_loop(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write("def strategy(o,h,l,c,v):\n    while True: pass\n")
+            f.write("def strategy(bars):\n    while True: pass\n")
             path = f.name
         try:
             result = run_strategy(path, self._make_bars(), timeout_seconds=2)
@@ -256,7 +256,7 @@ class TestSandbox:
 
     def test_wrong_shape_rejected(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write("import numpy as np\ndef strategy(o,h,l,c,v): return np.zeros(5)\n")
+            f.write("import numpy as np\ndef strategy(bars): return np.zeros(5)\n")  # wrong shape
             path = f.name
         try:
             result = run_strategy(path, self._make_bars())
@@ -414,7 +414,7 @@ class TestExport:
         """Export should produce strategy.py, run.py, requirements.txt, and Dockerfile."""
         # Create a fake strategy.py so export doesn't bail out
         fake_strategy = tmp_path / "strategy.py"
-        fake_strategy.write_text("def strategy(o,h,l,c,v): return [0.0]*len(c)\n")
+        fake_strategy.write_text("def strategy(bars): return [0.0]*len(bars['close'])\n")
         monkeypatch.chdir(tmp_path)
 
         from cli import export

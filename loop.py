@@ -37,16 +37,15 @@ Your job: write a Python strategy function that returns position weights.
 
 The function signature is:
 ```python
-def strategy(open, high, low, close, volume):
-    # open/high/low/close: numpy arrays of percentage returns
-    # volume: numpy array of z-score normalized volume
-    # Returns: positions array (same length as inputs)
+def strategy(bars):
+    # bars: dict of numpy arrays (keys depend on data source / skill file)
+    # Typical keys: open, high, low, close, volume
+    # Each array is 1D (single symbol) or 2D (n_bars x n_symbols)
+    # Returns: 1D positions array (length = number of bars)
     #   -1.0 = full short, 0.0 = flat, 1.0 = full long
-    #   Fractional values allowed (0.5 = half position)
 ```
 
-You may use: numpy, pandas, math, statistics.
-You may NOT use: any other imports (no sklearn, scipy, ta-lib, etc).
+You may use any installed Python packages (numpy, pandas, scipy, sklearn, etc).
 
 Each iteration:
 1. I show you the current strategy.py, recent results, and session context.
@@ -171,7 +170,8 @@ def build_user_message(current_strategy: str, recent: list[dict], session: str) 
 
 Write an improved strategy.py. Output ONLY the Python code (no markdown fences, \
 no explanation). The file must define `def strategy(open, high, low, close, volume)` \
-returning a positions array (floats: -1.0 short to 1.0 long, 0.0 flat)."""
+returning a 1D positions array (floats: -1.0 short to 1.0 long, 0.0 flat). \
+The function receives a single `bars` dict argument."""
 
 
 def extract_strategy_code(response_text: str) -> str:
