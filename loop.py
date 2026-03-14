@@ -169,9 +169,8 @@ def build_user_message(current_strategy: str, recent: list[dict], session: str) 
 {session}
 
 Write an improved strategy.py. Output ONLY the Python code (no markdown fences, \
-no explanation). The file must define `def strategy(open, high, low, close, volume)` \
-returning a 1D positions array (floats: -1.0 short to 1.0 long, 0.0 flat). \
-The function receives a single `bars` dict argument."""
+no explanation). The file must define `def strategy(bars)` where bars is a dict \
+of numpy arrays. Return a 1D positions array (floats: -1.0 short to 1.0 long, 0.0 flat)."""
 
 
 def extract_strategy_code(response_text: str) -> str:
