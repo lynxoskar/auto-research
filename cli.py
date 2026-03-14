@@ -20,7 +20,7 @@ import numpy as np
 import typer
 from loguru import logger
 
-from datasource import list_sources, load_data
+from datasource import list_sources, load_data, load_raw
 
 app = typer.Typer(
     name="auto-research",
@@ -32,6 +32,7 @@ STRATEGY_FILE = Path("strategy.py")
 TEMPLATE_FILE = Path("strategy_template.py")
 EXPERIMENTS_LOG = Path("experiments.jsonl")
 SESSION_FILE = Path("session.md")
+FIREWALL_KEY_FILE = Path(".firewall_key")
 
 
 def _parse_source_args(source_args: list[str]) -> dict:
@@ -86,12 +87,25 @@ def run(
 
     source_kwargs = _parse_source_args(source_arg or [])
 
+    from firewall import anonymize_dataset, generate_key, save_key
+
     logger.info("[CLI] run: source={} model={}", source, model)
     try:
-        data_df = load_data(source, **source_kwargs)
+        raw_df = load_raw(source, **source_kwargs)
     except Exception as e:
         logger.error("[DATA] Failed to load: {}", e)
         raise typer.Exit(1) from None
+
+    if FIREWALL_KEY_FILE.exists():
+        from firewall import load_key
+
+        fw_key = load_key(FIREWALL_KEY_FILE)
+        logger.info("[CLI] Reusing existing firewall key from {}", FIREWALL_KEY_FILE)
+    else:
+        fw_key = generate_key()
+        save_key(fw_key, FIREWALL_KEY_FILE)
+        logger.info("[CLI] New firewall key saved to {}", FIREWALL_KEY_FILE)
+    data_df, _reverse_map = anonymize_dataset(raw_df, fw_key)
 
     symbols = data_df["symbol"].unique().to_list()
     if symbol:
@@ -496,6 +510,187 @@ def _print_ascii_equity(equity: np.ndarray, width: int = 60, height: int = 10) -
         label = f"{threshold:.2f}" if row in (0, height - 1) else ""
         typer.echo(f"  {label:>6} |{line}|")
     typer.echo(f"         {'_' * width}")
+
+
+# ---------------------------------------------------------------------------
+# reveal
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def reveal(
+    source: Annotated[str, typer.Option(help="Data source name")] = "synthetic",
+    source_arg: Annotated[
+        list[str] | None, typer.Option(help="Source args as key=value")
+    ] = None,
+    key: Annotated[str | None, typer.Option(help="HMAC key as hex string")] = None,
+    key_file: Annotated[
+        str | None, typer.Option(help="Path to hex-encoded key file")
+    ] = None,
+    symbol: Annotated[str | None, typer.Option(help="Filter to anonymized symbol")] = None,
+    output: Annotated[str, typer.Option(help="Output format: json or csv")] = "json",
+) -> None:
+    """De-anonymize strategy output — map positions back to real tickers.
+
+    This is a PRIVILEGED operation that breaks the epistemic firewall.
+    Requires the HMAC key used during the original run.
+    """
+    import polars as pl
+
+    from backtest import backtest
+    from firewall import anonymize_dataset, load_key
+    from loop import polars_to_numpy_bars
+    from sandbox import run_strategy
+
+    if not STRATEGY_FILE.exists():
+        logger.error("[REVEAL] No strategy.py found. Run 'auto-research run' first.")
+        raise typer.Exit(1)
+
+    # Resolve key
+    if key:
+        fw_key = bytes.fromhex(key)
+    elif key_file:
+        fw_key = load_key(Path(key_file))
+    elif FIREWALL_KEY_FILE.exists():
+        fw_key = load_key(FIREWALL_KEY_FILE)
+    else:
+        logger.error(
+            "[REVEAL] No key provided. Use --key, --key-file, or run 'auto-research run' first."
+        )
+        raise typer.Exit(1)
+
+    source_kwargs = _parse_source_args(source_arg or [])
+
+    # Load RAW data (before firewall)
+    try:
+        raw_df = load_raw(source, **source_kwargs)
+    except Exception as e:
+        logger.error("[REVEAL] Failed to load raw data: {}", e)
+        raise typer.Exit(1) from None
+
+    # Anonymize with the provided key to get reverse_map
+    anon_df, reverse_map = anonymize_dataset(raw_df, fw_key)
+
+    # Warn prominently
+    typer.echo("=" * 60)
+    typer.echo("  WARNING: EPISTEMIC FIREWALL BREACHED")
+    typer.echo("  Real ticker symbols will be shown below.")
+    typer.echo("  Strategy code never saw these — only the output layer")
+    typer.echo("  is translating anonymized symbols to real tickers.")
+    typer.echo("=" * 60)
+    typer.echo("")
+
+    # Run strategy per symbol
+    anon_symbols = anon_df["symbol"].unique().to_list()
+    if symbol:
+        anon_symbols = [s for s in anon_symbols if s == symbol]
+        if not anon_symbols:
+            logger.error("[REVEAL] Symbol {} not found in anonymized data.", symbol)
+            raise typer.Exit(1)
+
+    results = []
+    for anon_sym in sorted(anon_symbols):
+        sym_df = anon_df.filter(pl.col("symbol") == anon_sym)
+        bars_np = polars_to_numpy_bars(sym_df)
+        bars_json = {k: v.tolist() for k, v in bars_np.items()}
+
+        result = run_strategy(STRATEGY_FILE, bars_json)
+        if "error" in result:
+            logger.warning("[REVEAL] Strategy failed on {}: {}", anon_sym, result["error"])
+            continue
+
+        pos = np.array(result["positions"])
+        close = bars_np["close"]
+        bt = backtest(close, pos)
+
+        real_sym = reverse_map.get(anon_sym, anon_sym)
+        results.append({
+            "real_symbol": real_sym,
+            "anon_symbol": anon_sym,
+            "current_position": float(pos[-1]),
+            "sharpe": bt["sharpe"],
+            "trades": bt["trades"],
+        })
+
+    if output == "json":
+        typer.echo(json.dumps(results, indent=2))
+    else:
+        typer.echo("real_symbol,anon_symbol,current_position,sharpe,trades")
+        for r in results:
+            typer.echo(
+                f"{r['real_symbol']},{r['anon_symbol']},"
+                f"{r['current_position']:.4f},{r['sharpe']},{r['trades']}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# compare (multi-symbol)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def compare(
+    source: Annotated[str, typer.Option(help="Data source name")] = "synthetic",
+    source_arg: Annotated[
+        list[str] | None, typer.Option(help="Source args as key=value")
+    ] = None,
+    symbols: Annotated[str | None, typer.Option(help="Comma-separated symbols")] = None,
+) -> None:
+    """Run strategy on multiple symbols and compare results."""
+    import polars as pl
+
+    from backtest import backtest
+    from loop import polars_to_numpy_bars
+    from sandbox import run_strategy
+
+    if not STRATEGY_FILE.exists():
+        logger.error("[COMPARE] No strategy.py found.")
+        raise typer.Exit(1)
+
+    source_kwargs = _parse_source_args(source_arg or [])
+    data_df = load_data(source, **source_kwargs)
+
+    available = data_df["symbol"].unique().to_list()
+    selected = [s.strip() for s in symbols.split(",")] if symbols else available
+
+    results = []
+    for sym in selected:
+        sym_df = data_df.filter(pl.col("symbol") == sym)
+        if len(sym_df) < 50:
+            logger.warning("[COMPARE] {} — {} bars, skipping", sym, len(sym_df))
+            continue
+
+        bars_np = polars_to_numpy_bars(sym_df)
+        bars_json = {k: v.tolist() for k, v in bars_np.items()}
+        result = run_strategy(STRATEGY_FILE, bars_json)
+
+        if "error" in result:
+            logger.warning("[COMPARE] {} failed: {}", sym, result["error"][:80])
+            continue
+
+        pos = np.array(result["positions"])
+        bt = backtest(bars_np["close"], pos)
+        bt["symbol"] = sym
+        results.append(bt)
+
+    if not results:
+        logger.error("[COMPARE] No symbols produced results.")
+        raise typer.Exit(1)
+
+    results.sort(key=lambda r: r["sharpe"], reverse=True)
+
+    typer.echo(
+        f"{'Symbol':<20} {'Sharpe':>8} {'MaxDD':>8} {'Trades':>7} "
+        f"{'WinRate':>8} {'Exposure':>8} {'Equity':>8}"
+    )
+    typer.echo("-" * 77)
+    for r in results:
+        typer.echo(
+            f"{r['symbol']:<20} {r['sharpe']:>8.4f} "
+            f"{r['max_drawdown']:>8.4f} {r['trades']:>7} "
+            f"{r['win_rate']:>8.4f} {r['exposure']:>8.4f} "
+            f"{r['final_equity']:>8.4f}"
+        )
 
 
 # ---------------------------------------------------------------------------

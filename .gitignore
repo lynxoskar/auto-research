@@ -4,5 +4,10 @@ __pycache__/
 *.egg-info/
 dist/
 .env
+.firewall_key
 anonymized_*.parquet
 .scrub/
+experiments.jsonl
+session.md
+strategy.py
+export/

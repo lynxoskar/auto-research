@@ -8,7 +8,14 @@ from pathlib import Path
 import numpy as np
 
 from backtest import backtest
-from firewall import anonymize_dataset, generate_key, generate_synthetic_data, load_parquet_duckdb
+from firewall import (
+    anonymize_dataset,
+    generate_key,
+    generate_synthetic_data,
+    load_key,
+    load_parquet_duckdb,
+    save_key,
+)
 from profiler import profile_strategy
 from sandbox import check_imports, run_strategy
 from torture import deflation_test, holdout_test, noise_test, stress_test
@@ -406,6 +413,102 @@ class TestEndToEnd:
         anon_symbols = anon["symbol"].unique().to_list()
         assert len(anon_symbols) == 3
         assert all(s.startswith("Asset_") for s in anon_symbols)
+
+
+# ---------------------------------------------------------------------------
+# Key Persistence & Reveal
+# ---------------------------------------------------------------------------
+
+
+class TestKeyPersistence:
+    def test_save_load_roundtrip(self, tmp_path):
+        """Key survives a save/load cycle."""
+        key = generate_key()
+        path = tmp_path / ".firewall_key"
+        save_key(key, path)
+        loaded = load_key(path)
+        assert loaded == key
+
+    def test_saved_key_is_hex(self, tmp_path):
+        """Saved file contains only hex characters."""
+        key = generate_key()
+        path = tmp_path / ".firewall_key"
+        save_key(key, path)
+        text = path.read_text().strip()
+        assert all(c in "0123456789abcdef" for c in text)
+        assert len(text) == 64  # 32 bytes → 64 hex chars
+
+
+class TestCompare:
+    def test_compare_multi_symbol(self):
+        """Strategy runs on multiple symbols and produces results for each."""
+        raw = generate_synthetic_data(symbols=["A", "B", "C"], bars_per_symbol=200)
+        key = generate_key()
+        anon, _ = anonymize_dataset(raw, key)
+
+        symbols = anon["symbol"].unique().to_list()
+        assert len(symbols) == 3
+
+        results = []
+        for sym in symbols:
+            sym_df = anon.filter(anon["symbol"] == sym)
+            bars = {
+                k: sym_df[k].to_numpy(allow_copy=True).tolist()
+                for k in ["open", "high", "low", "close", "volume"]
+            }
+            result = run_strategy("strategy_template.py", bars)
+            assert "error" not in result, result.get("error")
+            pos = np.array(result["positions"])
+            bt = backtest(np.array(bars["close"]), pos)
+            bt["symbol"] = sym
+            results.append(bt)
+
+        assert len(results) == 3
+        assert all("sharpe" in r for r in results)
+        assert all("symbol" in r for r in results)
+
+
+class TestReveal:
+    def test_reveal_maps_symbols_back(self):
+        """Anonymize → run strategy → reverse_map gives back original symbols."""
+        raw = generate_synthetic_data(symbols=["AAPL", "GOOGL"], bars_per_symbol=100)
+        key = generate_key()
+        anon_df, reverse_map = anonymize_dataset(raw, key)
+
+        # Verify the reverse map points back to originals
+        assert set(reverse_map.values()) == {"AAPL", "GOOGL"}
+
+        # Re-anonymize with the same key produces the same map
+        anon_df2, reverse_map2 = anonymize_dataset(raw, key)
+        assert reverse_map == reverse_map2
+
+        # Confirm every anon symbol resolves to a real one
+        for anon_sym in anon_df["symbol"].unique().to_list():
+            assert anon_sym in reverse_map
+            assert reverse_map[anon_sym] in {"AAPL", "GOOGL"}
+
+    def test_reveal_end_to_end(self, tmp_path):
+        """Full reveal pipeline: raw → anonymize → strategy → de-anonymize."""
+        raw = generate_synthetic_data(symbols=["MSFT"], bars_per_symbol=200)
+        key = generate_key()
+        anon_df, reverse_map = anonymize_dataset(raw, key)
+
+        # Run strategy on anonymized data
+        import polars as pl
+
+        anon_sym = anon_df["symbol"].unique().to_list()[0]
+        sym_df = anon_df.filter(pl.col("symbol") == anon_sym)
+        bars = {
+            k: sym_df[k].to_numpy(allow_copy=True).tolist()
+            for k in ["open", "high", "low", "close", "volume"]
+        }
+
+        result = run_strategy("strategy_template.py", bars)
+        assert "error" not in result, result.get("error")
+
+        # De-anonymize
+        real_sym = reverse_map[anon_sym]
+        assert real_sym == "MSFT"
 
 
 # ---------------------------------------------------------------------------

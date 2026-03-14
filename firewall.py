@@ -102,6 +102,19 @@ def load_and_anonymize(
     return anon_df, key, reverse_map
 
 
+def save_key(key: bytes, path: Path) -> None:
+    """Write an HMAC key as hex to a file (owner-only permissions)."""
+    import os
+
+    path.write_text(key.hex() + "\n")
+    os.chmod(path, 0o600)
+
+
+def load_key(path: Path) -> bytes:
+    """Read a hex-encoded HMAC key from a file."""
+    return bytes.fromhex(path.read_text().strip())
+
+
 def generate_synthetic_data(
     symbols: list[str] | None = None,
     bars_per_symbol: int = 500,
