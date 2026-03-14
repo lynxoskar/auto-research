@@ -82,6 +82,69 @@ def holdout_test(
     }
 
 
+def walkforward_test(
+    close_returns: np.ndarray,
+    positions: np.ndarray,
+    n_folds: int = 5,
+    train_frac: float = 0.6,
+    cost_bps: float = 10.0,
+) -> dict:
+    """Rolling walk-forward validation with multiple train/test windows.
+
+    Slides n_folds windows across the data. Each window uses train_frac
+    for training, the rest for testing. Strategy must be profitable in
+    >50% of test windows.
+
+    Returns {passed, folds: [{fold, train_sharpe, test_sharpe}], pass_rate}.
+    """
+    n = len(close_returns)
+    if n < 50:
+        return {"passed": True, "folds": [], "pass_rate": 0.0, "skipped": "need >= 50 bars"}
+
+    window_size = n // n_folds
+    if window_size < 10:
+        return {"passed": True, "folds": [], "pass_rate": 0.0, "skipped": "window too small"}
+
+    train_size = int(window_size * train_frac)
+    folds = []
+
+    for i in range(n_folds):
+        start = i * window_size
+        train_end = start + train_size
+        test_end = start + window_size
+
+        if test_end > n or train_end >= test_end:
+            break
+
+        train_ret = close_returns[start:train_end]
+        train_pos = positions[start:train_end]
+        test_ret = close_returns[train_end:test_end]
+        test_pos = positions[train_end:test_end]
+
+        if len(train_ret) == 0 or len(test_ret) == 0:
+            break
+
+        train_bt = backtest(train_ret, train_pos, cost_bps)
+        test_bt = backtest(test_ret, test_pos, cost_bps)
+
+        folds.append({
+            "fold": i,
+            "train_sharpe": round(train_bt["sharpe"], 4),
+            "test_sharpe": round(test_bt["sharpe"], 4),
+        })
+
+    if not folds:
+        return {"passed": True, "folds": [], "pass_rate": 0.0, "skipped": "no valid folds"}
+
+    pass_rate = sum(1 for f in folds if f["test_sharpe"] > 0) / len(folds)
+
+    return {
+        "passed": pass_rate > 0.5,
+        "folds": folds,
+        "pass_rate": round(pass_rate, 4),
+    }
+
+
 def deflation_test(
     close_returns: np.ndarray,
     positions: np.ndarray,

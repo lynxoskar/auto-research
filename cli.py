@@ -430,7 +430,7 @@ def returns(
     from backtest import backtest
     from loop import polars_to_numpy_bars
     from sandbox import run_strategy
-    from torture import deflation_test, holdout_test, noise_test
+    from torture import deflation_test, holdout_test, noise_test, walkforward_test
 
     if not STRATEGY_FILE.exists():
         logger.error("[RETURNS] No strategy.py found.")
@@ -460,6 +460,7 @@ def returns(
     noise = noise_test(close, pos)
     deflation = deflation_test(close, pos)
     holdout = holdout_test(close, pos)
+    walkforward = walkforward_test(close, pos)
 
     typer.echo("=== Performance Report ===")
     typer.echo(f"  Sharpe:       {bt['sharpe']}")
@@ -471,16 +472,24 @@ def returns(
     typer.echo("")
     typer.echo("=== Torture Tests ===")
     typer.echo(
-        f"  Noise:     {'PASS' if noise['passed'] else 'FAIL'}"
-        f" (real={noise['real_sharpe']}, shuffled={noise['mean_shuffled_sharpe']})"
+        f"  Noise:       {'PASS' if noise['passed'] else 'FAIL'}"
+        f" (real={noise['real_sharpe']},"
+        f" shuffled={noise['mean_shuffled_sharpe']})"
     )
     typer.echo(
-        f"  Deflation: {'PASS' if deflation['passed'] else 'FAIL'}"
-        f" (base={deflation['base_sharpe']}, deflated={deflation['deflated_sharpe']})"
+        f"  Deflation:   {'PASS' if deflation['passed'] else 'FAIL'}"
+        f" (base={deflation['base_sharpe']},"
+        f" deflated={deflation['deflated_sharpe']})"
     )
     typer.echo(
-        f"  Holdout:   {'PASS' if holdout['passed'] else 'FAIL'}"
-        f" (train={holdout['train_sharpe']}, holdout={holdout['holdout_sharpe']})"
+        f"  Holdout:     {'PASS' if holdout['passed'] else 'FAIL'}"
+        f" (train={holdout['train_sharpe']},"
+        f" holdout={holdout['holdout_sharpe']})"
+    )
+    typer.echo(
+        f"  Walkforward: {'PASS' if walkforward['passed'] else 'FAIL'}"
+        f" (pass_rate={walkforward.get('pass_rate', 0.0)},"
+        f" folds={len(walkforward.get('folds', []))})"
     )
 
     # ASCII equity curve (with costs, matching reported metrics)
