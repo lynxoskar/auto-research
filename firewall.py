@@ -78,7 +78,7 @@ def load_parquet_duckdb(parquet_path: str | Path) -> pl.DataFrame:
         "SELECT * FROM read_parquet(?)", [str(parquet_path)]
     ).to_arrow_table()
     con.close()
-    return pl.from_arrow(arrow_table)
+    return pl.DataFrame(pl.from_arrow(arrow_table))
 
 
 def load_and_anonymize(

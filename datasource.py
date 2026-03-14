@@ -1,28 +1,26 @@
-"""Pluggable data sources — load firewalled market data from any backend.
+"""Pluggable data sources — each source decides its own transforms.
 
-Data sources are simple callables that return (anonymized_polars_df, key).
-Register them as plugins, use them by name from the CLI or loop.
+Data sources are simple callables that return a Polars DataFrame with OHLCV columns.
+Each source decides whether to anonymize (firewall), normalize, or deliver raw data.
+The accompanying skill file describes the schema the LLM receives.
 
 Built-in sources:
-- "synthetic" — generated trending/mean-reverting data (no deps)
-- "parquet" — local parquet file
-- "ducklake" — DuckLake catalog over S3 (requires AWS credentials)
-
-Custom sources: any callable(config) -> pl.DataFrame with OHLCV columns
-gets wrapped by the firewall automatically.
+- "synthetic" — generated data, firewalled by default
+- "parquet" — local parquet file, raw (no firewall)
+- "ducklake" — DuckLake catalog over S3, firewalled by default
 
 Usage:
-    from datasource import load_firewalled, list_sources
+    from datasource import load_data, list_sources
 
-    df, key = load_firewalled("synthetic")
-    df, key = load_firewalled("parquet", path="data/bars.parquet")
-    df, key = load_firewalled("ducklake", symbol="AAPL")
+    df = load_data("synthetic")
+    df = load_data("parquet", path="data/bars.parquet")
+    df = load_data("ducklake", symbol="AAPL")
 """
 
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from collections.abc import Callable
 
 import duckdb
 import polars as pl
@@ -35,10 +33,8 @@ from firewall import anonymize_dataset, generate_key, generate_synthetic_data
 # ---------------------------------------------------------------------------
 
 
-class RawDataSource(Protocol):
-    """Any callable that returns a raw OHLCV Polars DataFrame."""
-
-    def __call__(self, **kwargs) -> pl.DataFrame: ...
+# Any callable that takes kwargs and returns a Polars DataFrame
+RawDataSource = Callable[..., pl.DataFrame]
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +124,7 @@ def _source_parquet(*, path: str, **_kwargs) -> pl.DataFrame:
     con = duckdb.connect()
     try:
         arrow = con.execute("SELECT * FROM read_parquet(?)", [path]).to_arrow_table()
-        return pl.from_arrow(arrow)
+        return pl.DataFrame(pl.from_arrow(arrow))
     finally:
         con.close()
 
@@ -211,7 +207,7 @@ def _source_ducklake(
                 "FROM lake.main.lynx_minutebars ORDER BY symbol, timestamp"
             ).to_arrow_table()
 
-        df = pl.from_arrow(arrow)
+        df = pl.DataFrame(pl.from_arrow(arrow))
 
         if firewall:
             key = generate_key()

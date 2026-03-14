@@ -43,8 +43,8 @@ class TestFirewall:
         df = generate_synthetic_data(symbols=["AAPL"], bars_per_symbol=100)
         key = generate_key()
         anon, _ = anonymize_dataset(df, key)
-        assert anon["close"].mean() < 1.0
-        assert anon["close"].max() < 0.5
+        assert float(anon["close"].mean()) < 1.0  # type: ignore[arg-type]
+        assert float(anon["close"].max()) < 0.5  # type: ignore[arg-type]
 
     def test_anonymize_shifts_dates(self):
         df = generate_synthetic_data(symbols=["AAPL"], bars_per_symbol=10)
@@ -67,8 +67,8 @@ class TestFirewall:
         key = generate_key()
         anon, _ = anonymize_dataset(df, key)
         vol = anon["volume"]
-        assert abs(vol.mean()) < 0.1
-        assert 0.5 < vol.std() < 1.5
+        assert abs(float(vol.mean())) < 0.1  # type: ignore[arg-type]
+        assert 0.5 < float(vol.std()) < 1.5  # type: ignore[arg-type]
 
     def test_synthetic_data_shape(self):
         df = generate_synthetic_data(symbols=["A", "B"], bars_per_symbol=50)

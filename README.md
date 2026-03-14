@@ -150,27 +150,31 @@ profitable, it doesn't have enough edge to survive real-world friction — disca
 
 ```
 auto-research/
-  backtest.py          # Numpy backtest engine
+  cli.py               # Typer CLI: 10 commands
+  loop.py              # Main loop: LLM -> sandbox -> backtest -> torture
+  backtest.py          # Numpy vectorized backtest engine
   datasource.py        # Pluggable data source registry
   firewall.py          # Epistemic firewall (optional per-source)
-  loop.py              # Main loop: LLM -> sandbox -> backtest -> torture
   sandbox.py           # Restricted subprocess execution
+  profiler.py          # Strategy position profiling
+  torture.py           # Noise, deflation, holdout, stress tests
   strategy_template.py # Baseline SMA crossover strategy
-  torture.py           # Noise test + deflation test
-  test_smoke.py        # 24 smoke tests
+  test_smoke.py        # 43 smoke tests
   skills/              # LLM skill files (injected into system prompt)
-    ducklake_data.md   # DuckLake data schema and source documentation
-  pyproject.toml       # Dependencies: anthropic, numpy, polars, duckdb, loguru
+    ducklake_data.md   # Data schema and source documentation
+  CLAUDE.md            # Agent instructions + mandatory quality gates
+  pyproject.toml       # Dependencies
 ```
 
-## Tests
+## Quality gates
 
 ```bash
-uv run pytest test_smoke.py -v
+uv run ruff check .             # lint
+uv run ty check                 # type check
+uv run pytest test_smoke.py -v  # 43 smoke tests
 ```
 
-24 tests covering: firewall determinism, backtest correctness, torture test logic,
-sandbox import blocking (static + runtime), timeout handling, full end-to-end pipeline.
+All three must pass before every commit.
 
 ## Session persistence
 
@@ -179,6 +183,7 @@ The system persists state across context resets:
 - `experiments.jsonl` — append-only log of every iteration
 - `session.md` — living document: what's been tried, dead ends, best result
 - `git history` — each kept strategy is a commit; discards are reverted
+- `.firewall_key` — HMAC key for de-anonymization (gitignored, 0600 perms)
 
 A fresh LLM can read `session.md` and continue where the last one left off.
 
@@ -192,3 +197,12 @@ only what code must enforce:
 3. **Data delivery** — sources provide data, skills describe it
 
 Everything else is the LLM's job.
+
+## Planned features
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Token oracle | Deferred (Mar 28) | Multi-provider LLM budget management, end-of-week token harvesting |
+| OS-level sandbox | Planned | nsjail/bubblewrap for strategy execution (current: restricted builtins) |
+| Walk-forward v2 | Planned | Multiple holdout windows instead of single 80/20 split |
+| Real-time positions | Planned | Connect to live data feeds, output positions on schedule |

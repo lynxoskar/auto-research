@@ -222,7 +222,7 @@ def run_iteration(
 
     if not response.content or not hasattr(response.content[0], "text"):
         raise RuntimeError("LLM returned empty or non-text response")
-    new_code = extract_strategy_code(response.content[0].text)
+    new_code = extract_strategy_code(str(response.content[0].text))
     STRATEGY_FILE.write_text(new_code)
 
     # Prepare bars as JSON-serializable lists for sandbox subprocess
