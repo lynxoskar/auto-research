@@ -53,7 +53,7 @@ Table: `lake.main.lynx_minutebars` — ~14,000 anonymized symbols, 20+ years, ~1
 ## What You Can Do
 
 1. **Explore the data** — look at return distributions, autocorrelation, volume patterns
-2. **Write strategy functions** — `def strategy(open, high, low, close, volume) -> (entry, exit)`
+2. **Write strategy functions** — `def strategy(open, high, low, close, volume) -> positions`
 3. **Use standard indicators** — SMA, EMA, RSI, Bollinger, MACD, ATR on reconstructed prices
 4. **Use numpy and pandas** — no other libraries allowed in strategy code
 
@@ -67,8 +67,14 @@ Table: `lake.main.lynx_minutebars` — ~14,000 anonymized symbols, 20+ years, ~1
 
 ## Strategy Evaluation
 
-Your strategy is evaluated on:
+Your strategy returns **position weights** per bar:
+- `-1.0` = full short, `0.0` = flat, `1.0` = full long
+- Fractional values allowed (e.g. `0.5` = half position)
+- Transaction costs scale with position changes — smooth transitions are cheaper
+
+Evaluation criteria:
 - **Sharpe ratio** — risk-adjusted return (higher is better)
-- **Noise test** — shuffle returns, re-run: your real Sharpe must be >1.5x shuffled Sharpe
+- **Noise test** — shuffle returns, re-run: real Sharpe must beat shuffled significantly
 - **Deflation test** — double transaction costs: strategy must still be profitable
-- **Trade count** — minimum 10 trades required
+- **Trade count** — minimum 10 position changes required
+- **Exposure** — fraction of time with a non-trivial position

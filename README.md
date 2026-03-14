@@ -112,21 +112,24 @@ Raw parquet does not.
 
 ## Strategy format
 
-The LLM writes a Python function. No JSON schema, no DSL — just code:
+The LLM writes a Python function that returns **position weights** — not boolean
+entry/exit signals. This gives full expressiveness: long, short, partial, or flat.
 
 ```python
 def strategy(open, high, low, close, volume):
     """
     Args: numpy arrays (schema depends on the data source skill).
-    Returns: (entry_signals, exit_signals) as boolean arrays.
+    Returns: positions array (same length as inputs).
+             -1.0 = full short, 0.0 = flat, 1.0 = full long.
+             Fractional values allowed (0.5 = half position).
     """
     prices = np.cumprod(1 + close)
     sma_fast = pd.Series(prices).rolling(20).mean().values
     sma_slow = pd.Series(prices).rolling(50).mean().values
 
-    entry = (sma_fast > sma_slow) & (np.roll(sma_fast, 1) <= np.roll(sma_slow, 1))
-    exit_ = (sma_fast < sma_slow)
-    return entry, exit_
+    # Continuous positioning: full long when trending, flat otherwise
+    positions = np.where(sma_fast > sma_slow, 1.0, 0.0)
+    return positions
 ```
 
 Allowed imports: `numpy`, `pandas`, `math`, `statistics`, `functools`, `itertools`.
