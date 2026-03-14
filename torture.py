@@ -1,7 +1,7 @@
 """Torture tests — detect overfitting and randomness.
 
 Two tests:
-1. Noise test: shuffle returns, re-run strategy, compare Sharpe.
+1. Noise test: shuffle returns, re-run backtest with same positions, compare Sharpe.
 2. Deflation test: double transaction costs, check if still profitable.
 """
 
@@ -14,32 +14,31 @@ from backtest import backtest
 
 def noise_test(
     close_returns: np.ndarray,
-    entry_signals: np.ndarray,
-    exit_signals: np.ndarray,
+    positions: np.ndarray,
     n_shuffles: int = 5,
     cost_bps: float = 10.0,
     threshold: float = 1.5,
 ) -> dict:
     """Test if strategy Sharpe is significantly better than on shuffled data.
 
+    Keeps the same position sequence but shuffles the return series.
+    If the strategy's timing doesn't matter, it's not a real signal.
+
     Returns dict with passed, real_sharpe, mean_shuffled_sharpe, ratio.
     """
-    real = backtest(close_returns, entry_signals, exit_signals, cost_bps)
+    real = backtest(close_returns, positions, cost_bps)
     real_sharpe = real["sharpe"]
 
     rng = np.random.default_rng(42)
     shuffled_sharpes = []
     for _ in range(n_shuffles):
         shuffled = rng.permutation(close_returns)
-        # Use same entry/exit signals on shuffled data — tests if signal timing matters
-        result = backtest(shuffled, entry_signals, exit_signals, cost_bps)
+        result = backtest(shuffled, positions, cost_bps)
         shuffled_sharpes.append(result["sharpe"])
 
     mean_shuffled = float(np.mean(shuffled_sharpes))
 
-    # Compute ratio: real vs shuffled. Handle negative/zero mean_shuffled correctly.
-    # When mean_shuffled <= 0, a positive real_sharpe is infinitely better.
-    # When mean_shuffled > 0, require real_sharpe to be threshold * mean_shuffled.
+    # Handle negative/zero mean_shuffled correctly
     if mean_shuffled > 0:
         ratio = real_sharpe / mean_shuffled
         passed = real_sharpe > mean_shuffled * threshold
@@ -47,7 +46,6 @@ def noise_test(
         ratio = float("inf") if real_sharpe > 0 else 0.0
         passed = real_sharpe > 0
     else:
-        # mean_shuffled < 0: real must be positive and better than shuffled by threshold margin
         ratio = float("inf") if real_sharpe > 0 else real_sharpe / abs(mean_shuffled)
         passed = real_sharpe > 0 and real_sharpe > abs(mean_shuffled) * threshold
 
@@ -61,8 +59,7 @@ def noise_test(
 
 def deflation_test(
     close_returns: np.ndarray,
-    entry_signals: np.ndarray,
-    exit_signals: np.ndarray,
+    positions: np.ndarray,
     base_cost_bps: float = 10.0,
     cost_multiplier: float = 2.0,
 ) -> dict:
@@ -70,10 +67,8 @@ def deflation_test(
 
     Returns dict with passed, base_sharpe, deflated_sharpe.
     """
-    base = backtest(close_returns, entry_signals, exit_signals, base_cost_bps)
-    deflated = backtest(
-        close_returns, entry_signals, exit_signals, base_cost_bps * cost_multiplier
-    )
+    base = backtest(close_returns, positions, base_cost_bps)
+    deflated = backtest(close_returns, positions, base_cost_bps * cost_multiplier)
 
     return {
         "passed": deflated["sharpe"] > 0,

@@ -16,6 +16,7 @@ from torture import deflation_test, noise_test
 # Firewall
 # ---------------------------------------------------------------------------
 
+
 class TestFirewall:
     def test_anonymize_symbols_are_deterministic(self):
         df = generate_synthetic_data(symbols=["AAPL"], bars_per_symbol=10)
@@ -34,7 +35,6 @@ class TestFirewall:
         df = generate_synthetic_data(symbols=["AAPL"], bars_per_symbol=100)
         key = generate_key()
         anon, _ = anonymize_dataset(df, key)
-        # Returns should be small percentages, not 100+ dollar prices
         assert anon["close"].mean() < 1.0
         assert anon["close"].max() < 0.5
 
@@ -44,16 +44,14 @@ class TestFirewall:
         anon, _ = anonymize_dataset(df, key, date_offset_days=365)
         original_first = df.sort("timestamp")["timestamp"][0]
         anon_first = anon.sort("timestamp")["timestamp"][0]
-        # Anon date should be earlier by ~365 days
         diff = (original_first - anon_first).days
         assert 360 <= diff <= 370
 
     def test_anonymize_returns_reverse_map(self):
         df = generate_synthetic_data(symbols=["AAPL", "GOOGL"], bars_per_symbol=10)
         key = generate_key()
-        anon, rmap = anonymize_dataset(df, key)
+        _, rmap = anonymize_dataset(df, key)
         assert len(rmap) == 2
-        # Reverse map values should be original symbols
         assert set(rmap.values()) == {"AAPL", "GOOGL"}
 
     def test_anonymize_volume_is_zscore(self):
@@ -61,7 +59,6 @@ class TestFirewall:
         key = generate_key()
         anon, _ = anonymize_dataset(df, key)
         vol = anon["volume"]
-        # Z-scored: mean ≈ 0, std ≈ 1
         assert abs(vol.mean()) < 0.1
         assert 0.5 < vol.std() < 1.5
 
@@ -80,111 +77,111 @@ class TestFirewall:
 
 
 # ---------------------------------------------------------------------------
-# Backtest
+# Backtest (position weights)
 # ---------------------------------------------------------------------------
+
 
 class TestBacktest:
     def test_empty_data(self):
-        result = backtest(np.array([]), np.array([]), np.array([]))
+        result = backtest(np.array([]), np.array([]))
         assert result["sharpe"] == 0.0
         assert result["trades"] == 0
         assert result["final_equity"] == 1.0
 
-    def test_no_trades_if_no_signals(self):
+    def test_flat_positions_no_trades(self):
         returns = np.random.default_rng(42).normal(0.001, 0.02, 100)
-        entry = np.zeros(100, dtype=bool)
-        exit_ = np.zeros(100, dtype=bool)
-        result = backtest(returns, entry, exit_)
+        positions = np.zeros(100)
+        result = backtest(returns, positions)
         assert result["trades"] == 0
         assert result["final_equity"] == 1.0
+        assert result["exposure"] == 0.0
 
-    def test_positive_trend_produces_positive_sharpe(self):
-        # Strong uptrend
-        returns = np.full(200, 0.005)
-        entry = np.zeros(200, dtype=bool)
-        exit_ = np.zeros(200, dtype=bool)
-        entry[0] = True
-        exit_[199] = True
-        result = backtest(returns, entry, exit_, cost_bps=0)
+    def test_full_long_on_uptrend(self):
+        returns = np.full(200, 0.005)  # strong uptrend
+        positions = np.ones(200)  # always long
+        result = backtest(returns, positions, cost_bps=0)
         assert result["sharpe"] > 0
-        assert result["trades"] == 1
+        assert result["final_equity"] > 1.0
+        assert result["exposure"] == 1.0
+
+    def test_short_on_downtrend(self):
+        returns = np.full(200, -0.005)  # downtrend
+        positions = np.full(200, -1.0)  # always short
+        result = backtest(returns, positions, cost_bps=0)
+        assert result["sharpe"] > 0  # shorting a downtrend is profitable
         assert result["final_equity"] > 1.0
 
     def test_transaction_costs_reduce_equity(self):
         returns = np.full(100, 0.001)
-        entry = np.zeros(100, dtype=bool)
-        exit_ = np.zeros(100, dtype=bool)
-        entry[::20] = True
-        exit_[10::20] = True
-
-        no_cost = backtest(returns, entry, exit_, cost_bps=0)
-        with_cost = backtest(returns, entry, exit_, cost_bps=50)
+        # Flip between long and flat frequently → high costs
+        positions = np.where(np.arange(100) % 10 < 5, 1.0, 0.0)
+        no_cost = backtest(returns, positions, cost_bps=0)
+        with_cost = backtest(returns, positions, cost_bps=50)
         assert with_cost["final_equity"] < no_cost["final_equity"]
+
+    def test_partial_positions(self):
+        returns = np.full(100, 0.01)
+        full = backtest(returns, np.ones(100), cost_bps=0)
+        half = backtest(returns, np.full(100, 0.5), cost_bps=0)
+        assert half["final_equity"] < full["final_equity"]
+        assert half["final_equity"] > 1.0
 
     def test_max_drawdown_is_negative_or_zero(self):
         returns = np.random.default_rng(7).normal(0, 0.02, 300)
-        entry = np.zeros(300, dtype=bool)
-        exit_ = np.zeros(300, dtype=bool)
-        entry[10] = True
-        exit_[290] = True
-        result = backtest(returns, entry, exit_)
+        positions = np.ones(300)
+        result = backtest(returns, positions)
         assert result["max_drawdown"] <= 0
 
     def test_win_rate_bounded(self):
         rng = np.random.default_rng(42)
         returns = rng.normal(0.001, 0.02, 500)
-        entry = np.zeros(500, dtype=bool)
-        exit_ = np.zeros(500, dtype=bool)
-        entry[50::60] = True
-        exit_[80::60] = True
-        result = backtest(returns, entry, exit_)
+        positions = np.where(returns > 0, 1.0, 0.0)  # perfect hindsight (cheating)
+        result = backtest(returns, positions)
         assert 0.0 <= result["win_rate"] <= 1.0
+
+    def test_positions_clipped(self):
+        returns = np.full(50, 0.01)
+        positions = np.full(50, 5.0)  # exceeds bounds
+        result = backtest(returns, positions, cost_bps=0)
+        # Should be clipped to 1.0
+        one_result = backtest(returns, np.ones(50), cost_bps=0)
+        assert abs(result["final_equity"] - one_result["final_equity"]) < 0.001
 
 
 # ---------------------------------------------------------------------------
 # Torture
 # ---------------------------------------------------------------------------
 
+
 class TestTorture:
-    def test_noise_test_passes_on_trending_data(self):
+    def test_noise_test_on_trending_data(self):
         rng = np.random.default_rng(42)
-        returns = rng.normal(0.003, 0.01, 500)  # strong drift
-        # Momentum: enter when cumulative return is rising
-        np.cumsum(returns)
-        entry = np.zeros(500, dtype=bool)
-        exit_ = np.zeros(500, dtype=bool)
-        entry[50::80] = True
-        exit_[90::80] = True
-        result = noise_test(returns, entry, exit_)
+        returns = rng.normal(0.003, 0.01, 500)
+        positions = np.where(np.cumsum(returns) > 0, 1.0, 0.0)
+        result = noise_test(returns, positions)
         assert result["real_sharpe"] > 0
 
-    def test_noise_test_fails_on_random_signals(self):
+    def test_noise_test_fails_on_random_positions(self):
         rng = np.random.default_rng(42)
         returns = rng.normal(0, 0.02, 500)
-        entry = rng.choice([True, False], 500, p=[0.05, 0.95])
-        exit_ = rng.choice([True, False], 500, p=[0.1, 0.9])
-        result = noise_test(returns, entry, exit_, n_shuffles=10)
-        # Random signals on random data: real sharpe should not be 1.5x shuffled
-        # (may occasionally pass by chance but unlikely with n=10)
+        positions = rng.uniform(-1, 1, 500)
+        result = noise_test(returns, positions, n_shuffles=10)
         assert isinstance(result["passed"], bool)
 
     def test_deflation_test_structure(self):
         returns = np.random.default_rng(42).normal(0.001, 0.02, 200)
-        entry = np.zeros(200, dtype=bool)
-        exit_ = np.zeros(200, dtype=bool)
-        entry[10] = True
-        exit_[190] = True
-        result = deflation_test(returns, entry, exit_)
+        positions = np.ones(200)
+        result = deflation_test(returns, positions)
         assert "passed" in result
         assert "base_sharpe" in result
         assert "deflated_sharpe" in result
-        # Deflated sharpe should be <= base sharpe (higher costs)
         assert result["deflated_sharpe"] <= result["base_sharpe"]
 
 
 # ---------------------------------------------------------------------------
 # Sandbox
 # ---------------------------------------------------------------------------
+
 
 class TestSandbox:
     def _make_bars(self, n: int = 100) -> dict:
@@ -200,12 +197,17 @@ class TestSandbox:
     def test_template_strategy_runs(self):
         result = run_strategy("strategy_template.py", self._make_bars())
         assert "error" not in result, result.get("error")
-        assert len(result["entry"]) == 100
-        assert len(result["exit"]) == 100
+        assert len(result["positions"]) == 100
+        # Positions should be floats between -1 and 1
+        positions = result["positions"]
+        assert all(-1.0 <= p <= 1.0 for p in positions)
 
     def test_import_os_blocked_static(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write("import os\ndef strategy(o,h,l,c,v): return [False]*len(c), [False]*len(c)")
+            f.write(
+                "import os\n"
+                "def strategy(o,h,l,c,v): return [0.0]*len(c)"
+            )
             path = f.name
         try:
             violations = check_imports(path)
@@ -216,11 +218,10 @@ class TestSandbox:
 
     def test_import_os_blocked_runtime(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            # Use __import__ to bypass static check
             f.write(
                 "def strategy(o,h,l,c,v):\n"
                 "    __import__('os')\n"
-                "    return [False]*len(c), [False]*len(c)\n"
+                "    return [0.0]*len(c)\n"
             )
             path = f.name
         try:
@@ -251,56 +252,55 @@ class TestSandbox:
         finally:
             Path(path).unlink()
 
+    def test_wrong_shape_rejected(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write("import numpy as np\ndef strategy(o,h,l,c,v): return np.zeros(5)\n")
+            path = f.name
+        try:
+            result = run_strategy(path, self._make_bars())
+            assert "error" in result  # wrong shape (5 != 100) must produce an error
+        finally:
+            Path(path).unlink()
+
 
 # ---------------------------------------------------------------------------
 # End-to-end (no LLM)
 # ---------------------------------------------------------------------------
 
+
 class TestEndToEnd:
     def test_full_pipeline(self):
-        """Firewall → sandbox → backtest → torture. No LLM needed."""
-        # 1. Generate + anonymize
+        """Firewall -> sandbox -> backtest -> torture. No LLM needed."""
         raw = generate_synthetic_data(symbols=["SYM"], bars_per_symbol=300)
         key = generate_key()
-        anon, rmap = anonymize_dataset(raw, key)
+        anon, _ = anonymize_dataset(raw, key)
         assert len(anon) == 300
 
-        # 2. Run template strategy in sandbox
-        bars = {k: anon[k].to_numpy(allow_copy=True).tolist()
-                for k in ["open", "high", "low", "close", "volume"]}
+        bars = {
+            k: anon[k].to_numpy(allow_copy=True).tolist()
+            for k in ["open", "high", "low", "close", "volume"]
+        }
         result = run_strategy("strategy_template.py", bars)
         assert "error" not in result, result.get("error")
 
-        entry = np.array(result["entry"])
-        exit_ = np.array(result["exit"])
+        positions = np.array(result["positions"])
         close = np.array(bars["close"])
 
-        # 3. Backtest
-        bt = backtest(close, entry, exit_)
+        bt = backtest(close, positions)
         assert isinstance(bt["sharpe"], float)
         assert isinstance(bt["trades"], int)
+        assert "exposure" in bt
 
-        # 4. Torture
-        noise = noise_test(close, entry, exit_)
+        noise = noise_test(close, positions)
         assert isinstance(noise["passed"], bool)
 
-        defl = deflation_test(close, entry, exit_)
+        defl = deflation_test(close, positions)
         assert isinstance(defl["passed"], bool)
 
-        # 5. Keep/discard decision
-        keep = (
-            bt["sharpe"] > float("-inf")
-            and noise["passed"]
-            and defl["passed"]
-            and bt["trades"] >= 10
-        )
-        assert isinstance(keep, bool)
-
     def test_multi_symbol_anonymization(self):
-        """Multiple symbols get distinct anonymized names."""
         raw = generate_synthetic_data(symbols=["A", "B", "C"], bars_per_symbol=50)
         key = generate_key()
-        anon, rmap = anonymize_dataset(raw, key)
+        anon, _ = anonymize_dataset(raw, key)
         anon_symbols = anon["symbol"].unique().to_list()
         assert len(anon_symbols) == 3
         assert all(s.startswith("Asset_") for s in anon_symbols)

@@ -79,11 +79,12 @@ if strategy is None:
     print(json.dumps({"error": "No strategy() function defined"}))
     sys.exit(1)
 
-entry, exit_ = strategy(open_, high, low, close, volume)
-result = {
-    "entry": [bool(x) for x in entry],
-    "exit": [bool(x) for x in exit_],
-}
+positions = strategy(open_, high, low, close, volume)
+positions = np.asarray(positions, dtype=float)
+if positions.shape != close.shape:
+    print(json.dumps({"error": f"positions shape {positions.shape} != data shape {close.shape}"}))
+    sys.exit(1)
+result = {"positions": [float(x) for x in positions]}
 print(json.dumps(result))
 '''
 

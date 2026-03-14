@@ -35,14 +35,16 @@ You are an autonomous trading strategy researcher. You work on anonymized market
 (symbols are hashed, dates are shifted, prices are normalized to returns). You CANNOT \
 identify real tickers or dates. Do not try.
 
-Your job: write a Python strategy function that generates profitable entry/exit signals.
+Your job: write a Python strategy function that returns position weights.
 
 The function signature is:
 ```python
 def strategy(open, high, low, close, volume):
     # open/high/low/close: numpy arrays of percentage returns
     # volume: numpy array of z-score normalized volume
-    # Returns: (entry_signals, exit_signals) as boolean arrays
+    # Returns: positions array (same length as inputs)
+    #   -1.0 = full short, 0.0 = flat, 1.0 = full long
+    #   Fractional values allowed (0.5 = half position)
 ```
 
 You may use: numpy, pandas, math, statistics.
@@ -53,6 +55,10 @@ Each iteration:
 2. You write an improved strategy.py.
 3. I run it, backtest it, torture-test it, and report results.
 4. If Sharpe improved AND noise test passed → keep. Otherwise → discard.
+
+Position weights give you full expressiveness: go long, short, partial, or flat. \
+Transaction costs scale with position changes — smooth transitions are cheaper than \
+binary flips. Exposure (fraction of time positioned) is tracked.
 
 Be creative. Try different approaches: momentum, mean reversion, volatility breakouts, \
 volume-weighted signals, regime detection via rolling stats. When stuck, try something \
@@ -167,7 +173,7 @@ def build_user_message(current_strategy: str, recent: list[dict], session: str) 
 
 Write an improved strategy.py. Output ONLY the Python code (no markdown fences, \
 no explanation). The file must define `def strategy(open, high, low, close, volume)` \
-returning `(entry, exit_)` boolean arrays."""
+returning a positions array (floats: -1.0 short to 1.0 long, 0.0 flat)."""
 
 
 def extract_strategy_code(response_text: str) -> str:
@@ -239,12 +245,11 @@ def run_iteration(
         update_session(experiment, new_code)
         return experiment
 
-    entry = np.array(result["entry"], dtype=bool)
-    exit_ = np.array(result["exit"], dtype=bool)
+    positions = np.array(result["positions"], dtype=np.float64)
 
-    bt = backtest(close_returns, entry, exit_)
-    noise = noise_test(close_returns, entry, exit_)
-    deflation = deflation_test(close_returns, entry, exit_)
+    bt = backtest(close_returns, positions)
+    noise = noise_test(close_returns, positions)
+    deflation = deflation_test(close_returns, positions)
 
     improved = bt["sharpe"] > best_sharpe
     keep = (
