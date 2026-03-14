@@ -469,8 +469,11 @@ def returns(
         f" (train={holdout['train_sharpe']}, holdout={holdout['holdout_sharpe']})"
     )
 
-    # ASCII equity curve
-    equity = np.cumprod(1 + pos * close)
+    # ASCII equity curve (with costs, matching reported metrics)
+    cost_frac = 10.0 / 10_000  # same default as backtest
+    position_changes = np.abs(np.diff(pos, prepend=0.0))
+    strategy_returns = pos * close - position_changes * cost_frac
+    equity = np.cumprod(1 + strategy_returns)
     _print_ascii_equity(equity)
 
 
