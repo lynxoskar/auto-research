@@ -100,3 +100,60 @@ def deflation_test(
         "base_sharpe": round(base["sharpe"], 4),
         "deflated_sharpe": round(deflated["sharpe"], 4),
     }
+
+
+def stress_test(
+    close_returns: np.ndarray,
+    positions: np.ndarray,
+    cost_bps: float = 10.0,
+    seed: int = 42,
+) -> dict:
+    """Test strategy against 3 hardcoded stress scenarios.
+
+    1. Flash crash: inject -20% return at a random point
+    2. Dead market: replace 50 bars with 0.0 returns
+    3. Volatility spike: multiply 30 bars by 5x
+
+    Returns {passed, scenarios: [{name, passed, max_drawdown}]}.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(close_returns)
+    scenarios = []
+
+    # 1. Flash crash
+    crash_returns = close_returns.copy()
+    crash_idx = rng.integers(n // 4, 3 * n // 4)
+    crash_returns[crash_idx] = -0.20
+    crash_bt = backtest(crash_returns, positions, cost_bps)
+    scenarios.append({
+        "name": "flash_crash",
+        "passed": crash_bt["max_drawdown"] > -0.50,
+        "max_drawdown": crash_bt["max_drawdown"],
+    })
+
+    # 2. Dead market
+    dead_returns = close_returns.copy()
+    dead_start = rng.integers(0, max(1, n - 50))
+    dead_returns[dead_start : dead_start + 50] = 0.0
+    dead_bt = backtest(dead_returns, positions, cost_bps)
+    scenarios.append({
+        "name": "dead_market",
+        "passed": dead_bt["final_equity"] > 0.5,
+        "max_drawdown": dead_bt["max_drawdown"],
+    })
+
+    # 3. Volatility spike
+    vol_returns = close_returns.copy()
+    vol_start = rng.integers(0, max(1, n - 30))
+    vol_returns[vol_start : vol_start + 30] *= 5.0
+    vol_bt = backtest(vol_returns, positions, cost_bps)
+    scenarios.append({
+        "name": "volatility_spike",
+        "passed": vol_bt["max_drawdown"] > -0.50,
+        "max_drawdown": vol_bt["max_drawdown"],
+    })
+
+    return {
+        "passed": all(s["passed"] for s in scenarios),
+        "scenarios": scenarios,
+    }

@@ -267,6 +267,57 @@ def positions(
 
 
 # ---------------------------------------------------------------------------
+# profile
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def profile(
+    source: Annotated[str, typer.Option(help="Data source name")] = "synthetic",
+    source_arg: Annotated[
+        list[str] | None, typer.Option(help="Source args as key=value")
+    ] = None,
+    symbol: Annotated[str | None, typer.Option(help="Filter to anonymized symbol")] = None,
+) -> None:
+    """Run the committed strategy and show a position profile."""
+    import polars as pl
+
+    from loop import polars_to_numpy_bars
+    from profiler import profile_strategy
+    from sandbox import run_strategy
+
+    if not STRATEGY_FILE.exists():
+        logger.error("[PROFILE] No strategy.py found. Run 'auto-research run' first.")
+        raise typer.Exit(1)
+
+    source_kwargs = _parse_source_args(source_arg or [])
+    data_df = load_data(source, **source_kwargs)
+
+    symbols = data_df["symbol"].unique().to_list()
+    if symbol:
+        data_df = data_df.filter(pl.col("symbol") == symbol)
+    else:
+        data_df = data_df.filter(pl.col("symbol") == symbols[0])
+
+    bars_np = polars_to_numpy_bars(data_df)
+    bars_json = {k: v.tolist() for k, v in bars_np.items()}
+
+    result = run_strategy(STRATEGY_FILE, bars_json)
+    if "error" in result:
+        logger.error("[PROFILE] Strategy failed: {}", result["error"])
+        raise typer.Exit(1)
+
+    pos = np.array(result["positions"])
+    prof = profile_strategy(pos)
+
+    typer.echo("Strategy Profile")
+    typer.echo("=" * 40)
+    for key, value in prof.items():
+        label = key.replace("_", " ").title()
+        typer.echo(f"  {label:<30} {value}")
+
+
+# ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
 
@@ -274,6 +325,7 @@ def positions(
 @app.command()
 def export(
     dest: Annotated[str, typer.Argument(help="Destination directory")] = "export",
+    no_docker: Annotated[bool, typer.Option(help="Skip Dockerfile generation")] = False,
 ) -> None:
     """Export best strategy as a standalone project."""
     dest_path = Path(dest)
@@ -316,9 +368,148 @@ if __name__ == "__main__":
     (dest_path / "run.py").write_text(runner)
     (dest_path / "requirements.txt").write_text("numpy\npandas\n")
 
+    # Write Dockerfile unless --no-docker
+    if not no_docker:
+        dockerfile = """\
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY strategy.py run.py ./
+
+CMD ["python", "run.py"]
+"""
+        (dest_path / "Dockerfile").write_text(dockerfile)
+
     logger.success("[EXPORT] Strategy exported to {}/", dest_path)
-    typer.echo(f"Files: {dest_path}/strategy.py, {dest_path}/run.py, {dest_path}/requirements.txt")
+    files = [f"{dest_path}/strategy.py", f"{dest_path}/run.py", f"{dest_path}/requirements.txt"]
+    if not no_docker:
+        files.append(f"{dest_path}/Dockerfile")
+    typer.echo(f"Files: {', '.join(files)}")
     typer.echo(f"Run:   echo '{{\"open\":[...],\"close\":[...],...}}' | python {dest_path}/run.py")
+    if not no_docker:
+        typer.echo(
+            f"Docker: docker build -t my-strategy {dest_path}/ && "
+            "echo '{\"open\":[...],...}' | docker run -i my-strategy"
+        )
+
+
+# ---------------------------------------------------------------------------
+# returns
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def returns(
+    source: Annotated[str, typer.Option(help="Data source name")] = "synthetic",
+    source_arg: Annotated[
+        list[str] | None, typer.Option(help="Source args as key=value")
+    ] = None,
+    symbol: Annotated[str | None, typer.Option(help="Filter to symbol")] = None,
+) -> None:
+    """Show performance report and ASCII equity curve for best strategy."""
+    import polars as pl
+
+    from backtest import backtest
+    from loop import polars_to_numpy_bars
+    from sandbox import run_strategy
+    from torture import deflation_test, holdout_test, noise_test
+
+    if not STRATEGY_FILE.exists():
+        logger.error("[RETURNS] No strategy.py found.")
+        raise typer.Exit(1)
+
+    source_kwargs = _parse_source_args(source_arg or [])
+    data_df = load_data(source, **source_kwargs)
+
+    symbols = data_df["symbol"].unique().to_list()
+    if symbol:
+        data_df = data_df.filter(pl.col("symbol") == symbol)
+    else:
+        data_df = data_df.filter(pl.col("symbol") == symbols[0])
+
+    bars_np = polars_to_numpy_bars(data_df)
+    bars_json = {k: v.tolist() for k, v in bars_np.items()}
+
+    result = run_strategy(STRATEGY_FILE, bars_json)
+    if "error" in result:
+        logger.error("[RETURNS] Strategy failed: {}", result["error"])
+        raise typer.Exit(1)
+
+    pos = np.array(result["positions"])
+    close = bars_np["close"]
+
+    bt = backtest(close, pos)
+    noise = noise_test(close, pos)
+    deflation = deflation_test(close, pos)
+    holdout = holdout_test(close, pos)
+
+    typer.echo("=== Performance Report ===")
+    typer.echo(f"  Sharpe:       {bt['sharpe']}")
+    typer.echo(f"  Max Drawdown: {bt['max_drawdown']}")
+    typer.echo(f"  Trades:       {bt['trades']}")
+    typer.echo(f"  Win Rate:     {bt['win_rate']}")
+    typer.echo(f"  Exposure:     {bt['exposure']}")
+    typer.echo(f"  Final Equity: {bt['final_equity']}")
+    typer.echo("")
+    typer.echo("=== Torture Tests ===")
+    typer.echo(
+        f"  Noise:     {'PASS' if noise['passed'] else 'FAIL'}"
+        f" (real={noise['real_sharpe']}, shuffled={noise['mean_shuffled_sharpe']})"
+    )
+    typer.echo(
+        f"  Deflation: {'PASS' if deflation['passed'] else 'FAIL'}"
+        f" (base={deflation['base_sharpe']}, deflated={deflation['deflated_sharpe']})"
+    )
+    typer.echo(
+        f"  Holdout:   {'PASS' if holdout['passed'] else 'FAIL'}"
+        f" (train={holdout['train_sharpe']}, holdout={holdout['holdout_sharpe']})"
+    )
+
+    # ASCII equity curve
+    equity = np.cumprod(1 + pos * close)
+    _print_ascii_equity(equity)
+
+
+def _print_ascii_equity(equity: np.ndarray, width: int = 60, height: int = 10) -> None:
+    """Print a simple ASCII equity curve."""
+    if len(equity) < 2:
+        return
+
+    indices = np.linspace(0, len(equity) - 1, width, dtype=int)
+    sampled = equity[indices]
+
+    lo, hi = float(np.min(sampled)), float(np.max(sampled))
+    if hi == lo:
+        hi = lo + 0.01
+
+    typer.echo("\n=== Equity Curve ===")
+    for row in range(height - 1, -1, -1):
+        threshold = lo + (hi - lo) * row / (height - 1)
+        line = "".join("#" if val >= threshold else " " for val in sampled)
+        label = f"{threshold:.2f}" if row in (0, height - 1) else ""
+        typer.echo(f"  {label:>6} |{line}|")
+    typer.echo(f"         {'_' * width}")
+
+
+# ---------------------------------------------------------------------------
+# test
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="test")
+def test_cmd() -> None:
+    """Run smoke tests."""
+    import subprocess as sp
+
+    result = sp.run(
+        ["uv", "run", "pytest", "test_smoke.py", "-v"],
+        cwd=Path(__file__).parent,
+    )
+    raise typer.Exit(result.returncode)
 
 
 if __name__ == "__main__":

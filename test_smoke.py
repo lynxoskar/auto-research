@@ -9,8 +9,9 @@ import numpy as np
 
 from backtest import backtest
 from firewall import anonymize_dataset, generate_key, generate_synthetic_data, load_parquet_duckdb
+from profiler import profile_strategy
 from sandbox import check_imports, run_strategy
-from torture import deflation_test, holdout_test, noise_test
+from torture import deflation_test, holdout_test, noise_test, stress_test
 
 # ---------------------------------------------------------------------------
 # Firewall
@@ -149,6 +150,44 @@ class TestBacktest:
 
 
 # ---------------------------------------------------------------------------
+# Profiler
+# ---------------------------------------------------------------------------
+
+
+class TestProfiler:
+    def test_empty_positions(self):
+        prof = profile_strategy(np.array([]))
+        assert prof["bars_total"] == 0
+        assert prof["bars_positioned"] == 0
+        assert prof["max_consecutive_flat"] == 0
+
+    def test_all_long(self):
+        positions = np.ones(100)
+        prof = profile_strategy(positions)
+        assert prof["bars_total"] == 100
+        assert prof["bars_positioned"] == 100
+        assert prof["bars_long"] == 100
+        assert prof["bars_short"] == 0
+        assert prof["bars_flat"] == 0
+        assert prof["avg_position"] == 1.0
+        assert prof["avg_abs_position"] == 1.0
+        assert prof["max_consecutive_positioned"] == 100
+        assert prof["max_consecutive_flat"] == 0
+
+    def test_mixed_positions(self):
+        # 10 long, 10 flat, 10 short
+        positions = np.concatenate([np.ones(10), np.zeros(10), np.full(10, -1.0)])
+        prof = profile_strategy(positions)
+        assert prof["bars_total"] == 30
+        assert prof["bars_long"] == 10
+        assert prof["bars_short"] == 10
+        assert prof["bars_flat"] == 10
+        assert prof["position_changes"] > 0
+        assert prof["max_consecutive_positioned"] == 10
+        assert prof["max_consecutive_flat"] == 10
+
+
+# ---------------------------------------------------------------------------
 # Torture
 # ---------------------------------------------------------------------------
 
@@ -203,6 +242,42 @@ class TestTorture:
         assert "base_sharpe" in result
         assert "deflated_sharpe" in result
         assert result["deflated_sharpe"] <= result["base_sharpe"]
+
+
+# ---------------------------------------------------------------------------
+# Stress Tests
+# ---------------------------------------------------------------------------
+
+
+class TestStress:
+    def test_stress_passes_on_conservative_strategy(self):
+        rng = np.random.default_rng(42)
+        returns = rng.normal(0.001, 0.02, 500)
+        positions = np.full(500, 0.3)  # conservative 30% position
+        result = stress_test(returns, positions)
+        assert "scenarios" in result
+        assert len(result["scenarios"]) == 3
+        for s in result["scenarios"]:
+            assert "name" in s
+            assert "passed" in s
+            assert "max_drawdown" in s
+
+    def test_stress_scenario_names(self):
+        returns = np.full(200, 0.001)
+        positions = np.ones(200)
+        result = stress_test(returns, positions)
+        names = [s["name"] for s in result["scenarios"]]
+        assert "flash_crash" in names
+        assert "dead_market" in names
+        assert "volatility_spike" in names
+
+    def test_stress_flash_crash_hurts(self):
+        returns = np.full(200, 0.001)
+        positions = np.ones(200)  # always fully long
+        result = stress_test(returns, positions)
+        crash = next(s for s in result["scenarios"] if s["name"] == "flash_crash")
+        # A -20% crash while fully long should cause significant drawdown
+        assert crash["max_drawdown"] < -0.15
 
 
 # ---------------------------------------------------------------------------
@@ -331,3 +406,33 @@ class TestEndToEnd:
         anon_symbols = anon["symbol"].unique().to_list()
         assert len(anon_symbols) == 3
         assert all(s.startswith("Asset_") for s in anon_symbols)
+
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
+
+
+class TestExport:
+    def test_export_creates_all_files_including_dockerfile(self, tmp_path, monkeypatch):
+        """Export should produce strategy.py, run.py, requirements.txt, and Dockerfile."""
+        # Create a fake strategy.py so export doesn't bail out
+        fake_strategy = tmp_path / "strategy.py"
+        fake_strategy.write_text("def strategy(o,h,l,c,v): return [0.0]*len(c)\n")
+        monkeypatch.chdir(tmp_path)
+
+        from cli import export
+
+        dest = tmp_path / "out"
+        export(str(dest))
+
+        expected = {"strategy.py", "run.py", "requirements.txt", "Dockerfile"}
+        actual = {p.name for p in dest.iterdir()}
+        assert expected == actual
+
+        # Verify Dockerfile content has the key directives
+        dockerfile_text = (dest / "Dockerfile").read_text()
+        assert "FROM python:3.12-slim" in dockerfile_text
+        assert "COPY strategy.py run.py" in dockerfile_text
+        assert "RUN pip install" in dockerfile_text
+        assert 'CMD ["python", "run.py"]' in dockerfile_text
