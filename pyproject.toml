@@ -1,0 +1,26 @@
+[project]
+name = "auto-research"
+version = "0.1.0"
+description = "LLM-driven trading strategy discovery on anonymized data"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic",
+    "numpy",
+    "polars",
+    "pandas",
+    "duckdb",
+    "pyarrow",
+    "loguru",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.6",
+]
