@@ -30,7 +30,7 @@ def noise_test(
     real = backtest(close_returns, positions, cost_bps)
     real_sharpe = real["sharpe"]
 
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng()
     shuffled_sharpes = []
     for _ in range(n_shuffles):
         shuffled = rng.permutation(close_returns)

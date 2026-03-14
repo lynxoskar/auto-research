@@ -8,6 +8,30 @@ import sys
 import tempfile
 from pathlib import Path
 
+from loguru import logger
+
+EXPLORE_RUNNER_TEMPLATE = '''
+import sys, json, io
+import numpy as np
+import pandas as pd
+
+raw = json.loads(sys.stdin.read())
+bars = {k: np.array(v) for k, v in raw.items()}
+
+code = json.loads(sys.argv[1])
+
+buf = io.StringIO()
+old_stdout = sys.stdout
+sys.stdout = buf
+try:
+    exec(compile(code, "<explore>", "exec"), {"bars": bars, "np": np, "pd": pd})
+    sys.stdout = old_stdout
+    print(json.dumps({"output": buf.getvalue()[:2000]}))
+except Exception as e:
+    sys.stdout = old_stdout
+    print(json.dumps({"error": str(e)}))
+'''
+
 RUNNER_TEMPLATE = '''
 import sys, json
 import numpy as np
@@ -95,5 +119,60 @@ def run_strategy(
         return {"error": f"Strategy produced invalid output: {stdout}"}
     except Exception as e:
         return {"error": f"Sandbox error: {e}"}
+    finally:
+        Path(runner_path).unlink(missing_ok=True)
+
+
+def run_explore(
+    code: str,
+    bars: dict,
+    timeout_seconds: int = 10,
+) -> dict:
+    """Execute a code snippet with bars in scope and return stdout.
+
+    Args:
+        code: Python code to execute. ``bars``, ``np``, ``pd`` are available.
+        bars: Dict of OHLCV arrays (JSON-serializable lists).
+        timeout_seconds: Max execution time.
+
+    Returns:
+        Dict with "output" (stdout, max 2000 chars) or "error" (str).
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+        tmp.write(EXPLORE_RUNNER_TEMPLATE)
+        runner_path = tmp.name
+
+    serializable = {}
+    for k, v in bars.items():
+        if hasattr(v, "tolist"):
+            serializable[k] = v.tolist()
+        else:
+            serializable[k] = [float(x) for x in v]
+    data_json = json.dumps(serializable)
+
+    try:
+        result = subprocess.run(
+            [sys.executable, runner_path, json.dumps(code)],
+            input=data_json,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env={"PATH": "", "PYTHONPATH": "", "HOME": ""},
+        )
+
+        if result.returncode != 0:
+            stderr = result.stderr[-500:] if result.stderr else "unknown error"
+            return {"error": f"Explore crashed: {stderr}"}
+
+        return json.loads(result.stdout)
+
+    except subprocess.TimeoutExpired:
+        logger.warning("[EXPLORE] Code timed out after {}s", timeout_seconds)
+        return {"error": f"Explore timed out after {timeout_seconds}s"}
+    except json.JSONDecodeError:
+        stdout = result.stdout[-200:] if result.stdout else "empty"
+        return {"error": f"Explore produced invalid output: {stdout}"}
+    except Exception as e:
+        return {"error": f"Explore sandbox error: {e}"}
     finally:
         Path(runner_path).unlink(missing_ok=True)

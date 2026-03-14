@@ -16,7 +16,7 @@ from firewall import (
     load_parquet_duckdb,
     save_key,
 )
-from sandbox import run_strategy
+from sandbox import run_explore, run_strategy
 from torture import deflation_test, noise_test, walkforward_test
 
 # ---------------------------------------------------------------------------
@@ -432,3 +432,38 @@ class TestExport:
         assert "COPY strategy.py run.py" in dockerfile_text
         assert "RUN pip install" in dockerfile_text
         assert 'CMD ["python", "run.py"]' in dockerfile_text
+
+
+# ---------------------------------------------------------------------------
+# Explore
+# ---------------------------------------------------------------------------
+
+
+class TestExplore:
+    def _make_bars(self, n: int = 100) -> dict:
+        rng = np.random.default_rng(42)
+        return {
+            "open": rng.normal(0, 0.02, n).tolist(),
+            "high": rng.normal(0, 0.02, n).tolist(),
+            "low": rng.normal(0, 0.02, n).tolist(),
+            "close": rng.normal(0.001, 0.02, n).tolist(),
+            "volume": rng.normal(0, 1, n).tolist(),
+        }
+
+    def test_run_explore_returns_output(self):
+        code = 'print(bars["close"].mean())'
+        result = run_explore(code, self._make_bars())
+        assert "output" in result, result
+        assert len(result["output"]) > 0
+
+    def test_run_explore_timeout(self):
+        code = "while True: pass"
+        result = run_explore(code, self._make_bars(), timeout_seconds=2)
+        assert "error" in result
+        assert "timed out" in result["error"].lower()
+
+    def test_run_explore_error(self):
+        code = 'raise ValueError("boom")'
+        result = run_explore(code, self._make_bars())
+        assert "error" in result
+        assert "boom" in result["error"]

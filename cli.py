@@ -95,6 +95,9 @@ def run(
     symbol: Annotated[str | None, typer.Option(help="Filter to anonymized symbol")] = None,
     max_iterations: Annotated[int, typer.Option(help="Max iterations (0=infinite)")] = 0,
     model: Annotated[str, typer.Option(help="LLM model")] = "claude-sonnet-4-20250514",
+    agent_mode: Annotated[
+        bool, typer.Option("--agent/--oneshot", help="Agent (tool-use) or oneshot mode")
+    ] = True,
 ) -> None:
     """Run the autonomous strategy discovery loop."""
     import anthropic
@@ -110,7 +113,8 @@ def run(
 
     source_kwargs = _parse_source_args(source_arg or [])
 
-    logger.info("[CLI] run: source={} model={}", source, model)
+    mode_label = "agent" if agent_mode else "oneshot"
+    logger.info("[CLI] run: source={} model={} mode={}", source, model, mode_label)
     try:
         data_df = _load_firewalled_data(source, source_kwargs)
     except Exception as e:
@@ -158,7 +162,10 @@ def run(
         logger.info("[LOOP] Iteration {} (best Sharpe: {:.4f})", iteration, best_sharpe)
 
         try:
-            result = run_iteration(client, bars_np, close_returns, best_sharpe, model)
+            result = run_iteration(
+                client, bars_np, close_returns, best_sharpe, model,
+                agent_mode=agent_mode,
+            )
         except KeyboardInterrupt:
             logger.info("[LOOP] Interrupted")
             break
