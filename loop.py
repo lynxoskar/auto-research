@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,9 +18,8 @@ import polars as pl
 from loguru import logger
 
 from backtest import backtest
-from datasource import list_sources, load_data
 from sandbox import run_strategy
-from torture import deflation_test, noise_test
+from torture import deflation_test, holdout_test, noise_test
 
 SKILLS_DIR = Path("skills")
 
@@ -250,12 +248,14 @@ def run_iteration(
     bt = backtest(close_returns, positions)
     noise = noise_test(close_returns, positions)
     deflation = deflation_test(close_returns, positions)
+    holdout = holdout_test(close_returns, positions)
 
     improved = bt["sharpe"] > best_sharpe
     keep = (
         improved
         and noise["passed"]
         and deflation["passed"]
+        and holdout["passed"]
         and bt["trades"] >= 10
     )
 
@@ -270,11 +270,14 @@ def run_iteration(
         "noise_ratio": noise["ratio"],
         "deflation_passed": deflation["passed"],
         "deflation_sharpe": deflation["deflated_sharpe"],
+        "holdout_passed": holdout["passed"],
+        "holdout_sharpe": holdout["holdout_sharpe"],
         "improved": improved,
         "description": (
             f"Sharpe={bt['sharpe']}, trades={bt['trades']}, "
             f"noise={'pass' if noise['passed'] else 'fail'}, "
-            f"deflation={'pass' if deflation['passed'] else 'fail'}"
+            f"deflation={'pass' if deflation['passed'] else 'fail'}, "
+            f"holdout={'pass' if holdout['passed'] else 'fail'}"
         ),
         "strategy_code": new_code[:1000],
     }
@@ -309,123 +312,7 @@ def _revert_strategy() -> None:
         shutil.copy(TEMPLATE_FILE, STRATEGY_FILE)
 
 
-def main() -> None:
-    """Run the autonomous strategy discovery loop."""
-    import argparse
-
-    available = list_sources()
-
-    parser = argparse.ArgumentParser(description="Autonomous strategy discovery")
-    parser.add_argument(
-        "--source",
-        type=str,
-        default="synthetic",
-        help=f"Data source name ({', '.join(available)})",
-    )
-    parser.add_argument("--symbol", type=str, help="Filter to single anonymized symbol")
-    parser.add_argument(
-        "--source-arg",
-        action="append",
-        default=[],
-        help="Extra source args as key=value (e.g. --source-arg path=data.parquet)",
-    )
-    parser.add_argument(
-        "--max-iterations", type=int, default=0, help="Max iterations (0=infinite)"
-    )
-    parser.add_argument("--model", type=str, default="claude-sonnet-4-20250514")
-    args = parser.parse_args()
-
-    # Parse source kwargs
-    source_kwargs = {}
-    for arg in args.source_arg:
-        if "=" not in arg:
-            logger.error("[DATA] --source-arg must be key=value, got: {}", arg)
-            sys.exit(1)
-        k, v = arg.split("=", 1)
-        source_kwargs[k] = v
-
-    # Load firewalled data via pluggable source
-    logger.info("[DATA] Loading from source '{}' {}", args.source, source_kwargs or "")
-    try:
-        data_df = load_data(args.source, **source_kwargs)
-    except Exception as e:
-        logger.error("[DATA] Failed to load data: {}", e)
-        sys.exit(1)
-
-    # Filter to single symbol (use anonymized names since data is already anonymized)
-    symbols = data_df["symbol"].unique().to_list()
-    if args.symbol:
-        # --symbol takes an anonymized name (e.g. Asset_B071EBDB)
-        data_df = data_df.filter(pl.col("symbol") == args.symbol)
-    else:
-        data_df = data_df.filter(pl.col("symbol") == symbols[0])
-    logger.info("[DATA] Using symbol: {} ({} bars)", data_df["symbol"][0], len(data_df))
-
-    if len(data_df) < 50:
-        logger.error("[DATA] Too few bars ({}) after filtering. Need at least 50.", len(data_df))
-        sys.exit(1)
-
-    # Convert to numpy for backtest/sandbox
-    # Note: zero_copy_only=False because pct_change columns may have been cloned.
-    # After firewall transform, columns are null-free floats — copies are cheap.
-    bars_np = polars_to_numpy_bars(data_df)
-    close_returns = bars_np["close"]
-
-    # Ensure git repo exists
-    if not Path(".git").exists():
-        subprocess.run(["git", "init"], capture_output=True, check=False)
-
-    # Initialize strategy file
-    if not STRATEGY_FILE.exists():
-        shutil.copy(TEMPLATE_FILE, STRATEGY_FILE)
-        subprocess.run(["git", "add", "strategy.py"], capture_output=True, check=False)
-        subprocess.run(
-            ["git", "commit", "-m", "init: baseline strategy"],
-            capture_output=True,
-            check=False,
-        )
-
-    client = anthropic.Anthropic()
-
-    best_sharpe = float("-inf")
-    iteration = 0
-
-    logger.info("[LOOP] Auto-Research: Strategy Discovery")
-    logger.info("[LOOP] Data: {} bars, model: {}", len(close_returns), args.model)
-    logger.info("[LOOP] Loop forever. Ctrl+C to stop.")
-
-    while True:
-        iteration += 1
-        if 0 < args.max_iterations < iteration:
-            logger.info("[LOOP] Reached max iterations ({}). Stopping.", args.max_iterations)
-            break
-
-        logger.info("[LOOP] Iteration {} (best Sharpe: {:.4f})", iteration, best_sharpe)
-
-        try:
-            result = run_iteration(client, bars_np, close_returns, best_sharpe, args.model)
-        except KeyboardInterrupt:
-            logger.info("[LOOP] Interrupted. Results saved to experiments.jsonl")
-            break
-        except Exception as e:
-            logger.error("[LOOP] {}", e)
-            log_experiment({"status": "crash", "error": str(e), "description": str(e)})
-            continue
-
-        status = result["status"]
-        sharpe = result.get("sharpe", 0)
-        trades = result.get("trades", 0)
-
-        if status == "keep":
-            best_sharpe = max(best_sharpe, sharpe)
-            logger.success(
-                "[KEEP] Sharpe={:.4f}, trades={}, best={:.4f}", sharpe, trades, best_sharpe
-            )
-        elif status == "crash":
-            logger.warning("[CRASH] {}", result.get("error", "unknown")[:100])
-        else:
-            logger.info("[DISCARD] Sharpe={:.4f}, trades={}", sharpe, trades)
-
-
 if __name__ == "__main__":
-    main()
+    from cli import app
+
+    app()

@@ -57,6 +57,31 @@ def noise_test(
     }
 
 
+def holdout_test(
+    close_returns: np.ndarray,
+    positions: np.ndarray,
+    train_frac: float = 0.8,
+    cost_bps: float = 10.0,
+) -> dict:
+    """Walk-forward temporal holdout: train on first 80%, validate on last 20%.
+
+    Uses the SAME position weights on both halves — catches time-dependent overfitting
+    that the noise shuffle test misses.
+
+    Returns dict with passed, train_sharpe, holdout_sharpe, split_index.
+    """
+    split = int(len(close_returns) * train_frac)
+    train = backtest(close_returns[:split], positions[:split], cost_bps)
+    holdout = backtest(close_returns[split:], positions[split:], cost_bps)
+
+    return {
+        "passed": holdout["sharpe"] > 0,
+        "train_sharpe": round(train["sharpe"], 4),
+        "holdout_sharpe": round(holdout["sharpe"], 4),
+        "split_index": split,
+    }
+
+
 def deflation_test(
     close_returns: np.ndarray,
     positions: np.ndarray,

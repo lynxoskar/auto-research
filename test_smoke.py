@@ -10,7 +10,7 @@ import numpy as np
 from backtest import backtest
 from firewall import anonymize_dataset, generate_key, generate_synthetic_data, load_parquet_duckdb
 from sandbox import check_imports, run_strategy
-from torture import deflation_test, noise_test
+from torture import deflation_test, holdout_test, noise_test
 
 # ---------------------------------------------------------------------------
 # Firewall
@@ -167,6 +167,33 @@ class TestTorture:
         positions = rng.uniform(-1, 1, 500)
         result = noise_test(returns, positions, n_shuffles=10)
         assert isinstance(result["passed"], bool)
+
+    def test_holdout_passes_on_consistent_trend(self):
+        returns = np.full(500, 0.003)  # steady uptrend throughout
+        positions = np.ones(500)
+        result = holdout_test(returns, positions)
+        assert result["passed"] is True
+        assert result["holdout_sharpe"] > 0
+        assert result["split_index"] == 400
+
+    def test_holdout_fails_when_second_half_reverses(self):
+        # First half trends up, second half trends down — positions stay long
+        returns = np.concatenate([np.full(400, 0.005), np.full(100, -0.01)])
+        positions = np.ones(500)
+        result = holdout_test(returns, positions)
+        assert result["passed"] is False
+        assert result["train_sharpe"] > result["holdout_sharpe"]
+
+    def test_holdout_result_structure(self):
+        rng = np.random.default_rng(42)
+        returns = rng.normal(0.001, 0.02, 200)
+        positions = np.ones(200)
+        result = holdout_test(returns, positions)
+        assert "passed" in result
+        assert "train_sharpe" in result
+        assert "holdout_sharpe" in result
+        assert "split_index" in result
+        assert result["split_index"] == 160
 
     def test_deflation_test_structure(self):
         returns = np.random.default_rng(42).normal(0.001, 0.02, 200)
