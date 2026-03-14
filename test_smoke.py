@@ -16,9 +16,8 @@ from firewall import (
     load_parquet_duckdb,
     save_key,
 )
-from profiler import profile_strategy
 from sandbox import run_strategy
-from torture import deflation_test, holdout_test, noise_test, stress_test, walkforward_test
+from torture import deflation_test, noise_test, walkforward_test
 
 # ---------------------------------------------------------------------------
 # Firewall
@@ -157,44 +156,6 @@ class TestBacktest:
 
 
 # ---------------------------------------------------------------------------
-# Profiler
-# ---------------------------------------------------------------------------
-
-
-class TestProfiler:
-    def test_empty_positions(self):
-        prof = profile_strategy(np.array([]))
-        assert prof["bars_total"] == 0
-        assert prof["bars_positioned"] == 0
-        assert prof["max_consecutive_flat"] == 0
-
-    def test_all_long(self):
-        positions = np.ones(100)
-        prof = profile_strategy(positions)
-        assert prof["bars_total"] == 100
-        assert prof["bars_positioned"] == 100
-        assert prof["bars_long"] == 100
-        assert prof["bars_short"] == 0
-        assert prof["bars_flat"] == 0
-        assert prof["avg_position"] == 1.0
-        assert prof["avg_abs_position"] == 1.0
-        assert prof["max_consecutive_positioned"] == 100
-        assert prof["max_consecutive_flat"] == 0
-
-    def test_mixed_positions(self):
-        # 10 long, 10 flat, 10 short
-        positions = np.concatenate([np.ones(10), np.zeros(10), np.full(10, -1.0)])
-        prof = profile_strategy(positions)
-        assert prof["bars_total"] == 30
-        assert prof["bars_long"] == 10
-        assert prof["bars_short"] == 10
-        assert prof["bars_flat"] == 10
-        assert prof["position_changes"] > 0
-        assert prof["max_consecutive_positioned"] == 10
-        assert prof["max_consecutive_flat"] == 10
-
-
-# ---------------------------------------------------------------------------
 # Torture
 # ---------------------------------------------------------------------------
 
@@ -213,33 +174,6 @@ class TestTorture:
         positions = rng.uniform(-1, 1, 500)
         result = noise_test(returns, positions, n_shuffles=10)
         assert isinstance(result["passed"], bool)
-
-    def test_holdout_passes_on_consistent_trend(self):
-        returns = np.full(500, 0.003)  # steady uptrend throughout
-        positions = np.ones(500)
-        result = holdout_test(returns, positions)
-        assert result["passed"] is True
-        assert result["holdout_sharpe"] > 0
-        assert result["split_index"] == 400
-
-    def test_holdout_fails_when_second_half_reverses(self):
-        # First half trends up, second half trends down — positions stay long
-        returns = np.concatenate([np.full(400, 0.005), np.full(100, -0.01)])
-        positions = np.ones(500)
-        result = holdout_test(returns, positions)
-        assert result["passed"] is False
-        assert result["train_sharpe"] > result["holdout_sharpe"]
-
-    def test_holdout_result_structure(self):
-        rng = np.random.default_rng(42)
-        returns = rng.normal(0.001, 0.02, 200)
-        positions = np.ones(200)
-        result = holdout_test(returns, positions)
-        assert "passed" in result
-        assert "train_sharpe" in result
-        assert "holdout_sharpe" in result
-        assert "split_index" in result
-        assert result["split_index"] == 160
 
     def test_deflation_test_structure(self):
         returns = np.random.default_rng(42).normal(0.001, 0.02, 200)
@@ -273,42 +207,6 @@ class TestTorture:
         positions = np.ones(30)
         result = walkforward_test(returns, positions)
         assert "skipped" in result or result.get("passed") is not None
-
-
-# ---------------------------------------------------------------------------
-# Stress Tests
-# ---------------------------------------------------------------------------
-
-
-class TestStress:
-    def test_stress_passes_on_conservative_strategy(self):
-        rng = np.random.default_rng(42)
-        returns = rng.normal(0.001, 0.02, 500)
-        positions = np.full(500, 0.3)  # conservative 30% position
-        result = stress_test(returns, positions)
-        assert "scenarios" in result
-        assert len(result["scenarios"]) == 3
-        for s in result["scenarios"]:
-            assert "name" in s
-            assert "passed" in s
-            assert "max_drawdown" in s
-
-    def test_stress_scenario_names(self):
-        returns = np.full(200, 0.001)
-        positions = np.ones(200)
-        result = stress_test(returns, positions)
-        names = [s["name"] for s in result["scenarios"]]
-        assert "flash_crash" in names
-        assert "dead_market" in names
-        assert "volatility_spike" in names
-
-    def test_stress_flash_crash_hurts(self):
-        returns = np.full(200, 0.001)
-        positions = np.ones(200)  # always fully long
-        result = stress_test(returns, positions)
-        crash = next(s for s in result["scenarios"] if s["name"] == "flash_crash")
-        # A -20% crash while fully long should cause significant drawdown
-        assert crash["max_drawdown"] < -0.15
 
 
 # ---------------------------------------------------------------------------

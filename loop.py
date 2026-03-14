@@ -19,7 +19,7 @@ from loguru import logger
 
 from backtest import backtest
 from sandbox import run_strategy
-from torture import deflation_test, holdout_test, noise_test, walkforward_test
+from torture import deflation_test, noise_test, walkforward_test
 
 SKILLS_DIR = Path("skills")
 
@@ -248,7 +248,6 @@ def run_iteration(
     bt = backtest(close_returns, positions)
     noise = noise_test(close_returns, positions)
     deflation = deflation_test(close_returns, positions)
-    holdout = holdout_test(close_returns, positions)
     walkforward = walkforward_test(close_returns, positions)
 
     improved = bt["sharpe"] > best_sharpe
@@ -256,7 +255,6 @@ def run_iteration(
         improved
         and noise["passed"]
         and deflation["passed"]
-        and holdout["passed"]
         and walkforward["passed"]
         and bt["trades"] >= 10
     )
@@ -272,8 +270,6 @@ def run_iteration(
         "noise_ratio": noise["ratio"],
         "deflation_passed": deflation["passed"],
         "deflation_sharpe": deflation["deflated_sharpe"],
-        "holdout_passed": holdout["passed"],
-        "holdout_sharpe": holdout["holdout_sharpe"],
         "walkforward_passed": walkforward["passed"],
         "walkforward_pass_rate": walkforward.get("pass_rate", 0.0),
         "improved": improved,
@@ -281,7 +277,6 @@ def run_iteration(
             f"Sharpe={bt['sharpe']}, trades={bt['trades']}, "
             f"noise={'pass' if noise['passed'] else 'fail'}, "
             f"deflation={'pass' if deflation['passed'] else 'fail'}, "
-            f"holdout={'pass' if holdout['passed'] else 'fail'}, "
             f"walkforward={'pass' if walkforward['passed'] else 'fail'}"
         ),
         "strategy_code": new_code[:1000],

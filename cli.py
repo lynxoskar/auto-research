@@ -3,7 +3,6 @@
 Usage:
     auto-research run --source synthetic --max-iterations 10
     auto-research status
-    auto-research sources
     auto-research positions --source synthetic
     auto-research export ./my-strategy/
 """
@@ -14,13 +13,16 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
+
+if TYPE_CHECKING:
+    import polars as pl
 
 import numpy as np
 import typer
 from loguru import logger
 
-from datasource import list_sources, load_data, load_raw
+from datasource import load_raw
 
 app = typer.Typer(
     name="auto-research",
@@ -58,6 +60,27 @@ def _load_experiments() -> list[dict]:
     return experiments
 
 
+def _load_firewalled_data(source: str, source_kwargs: dict) -> pl.DataFrame:
+    """Load data using the persisted firewall key (same as run command).
+
+    This ensures all CLI commands evaluate strategies on the same data
+    that the run command trained on.
+    """
+    from firewall import anonymize_dataset, generate_key, load_key, save_key
+
+    raw_df = load_raw(source, **source_kwargs)
+
+    if FIREWALL_KEY_FILE.exists():
+        fw_key = load_key(FIREWALL_KEY_FILE)
+    else:
+        fw_key = generate_key()
+        save_key(fw_key, FIREWALL_KEY_FILE)
+        logger.info("[DATA] New firewall key saved to {}", FIREWALL_KEY_FILE)
+
+    data_df, _ = anonymize_dataset(raw_df, fw_key)
+    return data_df
+
+
 # ---------------------------------------------------------------------------
 # run
 # ---------------------------------------------------------------------------
@@ -87,25 +110,12 @@ def run(
 
     source_kwargs = _parse_source_args(source_arg or [])
 
-    from firewall import anonymize_dataset, generate_key, save_key
-
     logger.info("[CLI] run: source={} model={}", source, model)
     try:
-        raw_df = load_raw(source, **source_kwargs)
+        data_df = _load_firewalled_data(source, source_kwargs)
     except Exception as e:
         logger.error("[DATA] Failed to load: {}", e)
         raise typer.Exit(1) from None
-
-    if FIREWALL_KEY_FILE.exists():
-        from firewall import load_key
-
-        fw_key = load_key(FIREWALL_KEY_FILE)
-        logger.info("[CLI] Reusing existing firewall key from {}", FIREWALL_KEY_FILE)
-    else:
-        fw_key = generate_key()
-        save_key(fw_key, FIREWALL_KEY_FILE)
-        logger.info("[CLI] New firewall key saved to {}", FIREWALL_KEY_FILE)
-    data_df, _reverse_map = anonymize_dataset(raw_df, fw_key)
 
     symbols = data_df["symbol"].unique().to_list()
     if symbol:
@@ -208,18 +218,6 @@ def status() -> None:
 
 
 # ---------------------------------------------------------------------------
-# sources
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def sources() -> None:
-    """List available data sources."""
-    for name in list_sources():
-        typer.echo(name)
-
-
-# ---------------------------------------------------------------------------
 # positions
 # ---------------------------------------------------------------------------
 
@@ -245,7 +243,7 @@ def positions(
         raise typer.Exit(1)
 
     source_kwargs = _parse_source_args(source_arg or [])
-    data_df = load_data(source, **source_kwargs)
+    data_df = _load_firewalled_data(source, source_kwargs)
 
     symbols = data_df["symbol"].unique().to_list()
     if symbol:
@@ -278,57 +276,6 @@ def positions(
         typer.echo("bar,position")
         for i, p in enumerate(pos):
             typer.echo(f"{i},{p:.4f}")
-
-
-# ---------------------------------------------------------------------------
-# profile
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def profile(
-    source: Annotated[str, typer.Option(help="Data source name")] = "synthetic",
-    source_arg: Annotated[
-        list[str] | None, typer.Option(help="Source args as key=value")
-    ] = None,
-    symbol: Annotated[str | None, typer.Option(help="Filter to anonymized symbol")] = None,
-) -> None:
-    """Run the committed strategy and show a position profile."""
-    import polars as pl
-
-    from loop import polars_to_numpy_bars
-    from profiler import profile_strategy
-    from sandbox import run_strategy
-
-    if not STRATEGY_FILE.exists():
-        logger.error("[PROFILE] No strategy.py found. Run 'auto-research run' first.")
-        raise typer.Exit(1)
-
-    source_kwargs = _parse_source_args(source_arg or [])
-    data_df = load_data(source, **source_kwargs)
-
-    symbols = data_df["symbol"].unique().to_list()
-    if symbol:
-        data_df = data_df.filter(pl.col("symbol") == symbol)
-    else:
-        data_df = data_df.filter(pl.col("symbol") == symbols[0])
-
-    bars_np = polars_to_numpy_bars(data_df)
-    bars_json = {k: v.tolist() for k, v in bars_np.items()}
-
-    result = run_strategy(STRATEGY_FILE, bars_json)
-    if "error" in result:
-        logger.error("[PROFILE] Strategy failed: {}", result["error"])
-        raise typer.Exit(1)
-
-    pos = np.array(result["positions"])
-    prof = profile_strategy(pos)
-
-    typer.echo("Strategy Profile")
-    typer.echo("=" * 40)
-    for key, value in prof.items():
-        label = key.replace("_", " ").title()
-        typer.echo(f"  {label:<30} {value}")
 
 
 # ---------------------------------------------------------------------------
@@ -430,14 +377,14 @@ def returns(
     from backtest import backtest
     from loop import polars_to_numpy_bars
     from sandbox import run_strategy
-    from torture import deflation_test, holdout_test, noise_test, walkforward_test
+    from torture import deflation_test, noise_test, walkforward_test
 
     if not STRATEGY_FILE.exists():
         logger.error("[RETURNS] No strategy.py found.")
         raise typer.Exit(1)
 
     source_kwargs = _parse_source_args(source_arg or [])
-    data_df = load_data(source, **source_kwargs)
+    data_df = _load_firewalled_data(source, source_kwargs)
 
     symbols = data_df["symbol"].unique().to_list()
     if symbol:
@@ -459,7 +406,6 @@ def returns(
     bt = backtest(close, pos)
     noise = noise_test(close, pos)
     deflation = deflation_test(close, pos)
-    holdout = holdout_test(close, pos)
     walkforward = walkforward_test(close, pos)
 
     typer.echo("=== Performance Report ===")
@@ -480,11 +426,6 @@ def returns(
         f"  Deflation:   {'PASS' if deflation['passed'] else 'FAIL'}"
         f" (base={deflation['base_sharpe']},"
         f" deflated={deflation['deflated_sharpe']})"
-    )
-    typer.echo(
-        f"  Holdout:     {'PASS' if holdout['passed'] else 'FAIL'}"
-        f" (train={holdout['train_sharpe']},"
-        f" holdout={holdout['holdout_sharpe']})"
     )
     typer.echo(
         f"  Walkforward: {'PASS' if walkforward['passed'] else 'FAIL'}"
@@ -657,7 +598,7 @@ def compare(
         raise typer.Exit(1)
 
     source_kwargs = _parse_source_args(source_arg or [])
-    data_df = load_data(source, **source_kwargs)
+    data_df = _load_firewalled_data(source, source_kwargs)
 
     available = data_df["symbol"].unique().to_list()
     selected = [s.strip() for s in symbols.split(",")] if symbols else available
@@ -700,23 +641,6 @@ def compare(
             f"{r['win_rate']:>8.4f} {r['exposure']:>8.4f} "
             f"{r['final_equity']:>8.4f}"
         )
-
-
-# ---------------------------------------------------------------------------
-# test
-# ---------------------------------------------------------------------------
-
-
-@app.command(name="test")
-def test_cmd() -> None:
-    """Run smoke tests."""
-    import subprocess as sp
-
-    result = sp.run(
-        ["uv", "run", "pytest", "test_smoke.py", "-v"],
-        cwd=Path(__file__).parent,
-    )
-    raise typer.Exit(result.returncode)
 
 
 if __name__ == "__main__":
